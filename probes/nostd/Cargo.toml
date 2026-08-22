@@ -1,0 +1,28 @@
+[package]
+name = "xtce-flight-nostd-probe"
+description = "Builds the generated flight code for a bare-metal target, with no std and no panic path"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Its own workspace: this crate builds for `thumbv7em-none-eabihf`, and a workspace member
+# would pull that target into every `cargo build` in the repository.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[build-dependencies]
+xtce-flight = { path = "../../crates/xtce-flight", default-features = false }
+xtce-model = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "baf3790f21de01447db2fae73d3312ebe32c00f8" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+# Unwinding needs a personality routine that a bare-metal target does not have, and the
+# no-panic check below is about there being no branch to abort from either.
+panic = "abort"
+debug = false

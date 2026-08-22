@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The bare-metal probe is its own workspace: it builds for `thumbv7em-none-eabihf`, and a
+# workspace member would drag that target into every `cargo build --workspace` here.
+exclude = ["probes/nostd"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/RustSpaceLab/xtce-flight"
+authors = ["Maciej Myszkiewicz"]
+
+[workspace.dependencies]
+# Without the CLI: a build script that generates code has no use for an argument parser.
+xtce-flight = { path = "crates/xtce-flight", version = "0.1.0", default-features = false }
+
+# Pinned to a revision, not a branch. `xtce_codegen::plan` is this project's input format;
+# a moving dependency would mean an unrelated commit there breaks a build here.
+xtce-model = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "baf3790f21de01447db2fae73d3312ebe32c00f8" }
+xtce-codegen = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "baf3790f21de01447db2fae73d3312ebe32c00f8" }
+xtce-decode = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "baf3790f21de01447db2fae73d3312ebe32c00f8" }
+
+clap = { version = "4", features = ["derive"] }
+prettyplease = "0.2"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing"] }
+thiserror = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# A 1.6 MB XTCE file is unusable through an unoptimised parser.
+[profile.dev.package."*"]
+opt-level = 2

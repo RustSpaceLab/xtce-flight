@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Written for this project, not a mission file.
+
+  Real definitions are the right thing to validate against, and `jpss1_geolocation_xtce_v1.xml`
+  next to this one is one. But the mission files reach almost none of an encoder's edges: no
+  enumeration whose label needs sanitising into a Rust identifier, no string delimited by a
+  termination character, no leading-size string, and no float at an offset that makes it span
+  an extra byte. This file exists so those paths are exercised rather than assumed.
+
+  Two concrete containers, chosen by APID, so the generated encoder has to write the
+  restriction criteria itself — a packet whose guards are missing is not merely wrong, it is
+  unrecognisable, and the interpreter rejects it outright.
+
+  StatusReport is the byte-aligned shape: text and binary have to start on a byte and occupy
+  whole bytes, so an encoder for them is slicing, not shifting.
+
+  Beacon is the opposite: one bit of flag puts everything after it off a boundary. F64_ODD
+  starts at bit 177, so it covers nine bytes — the case a 64-bit load truncates.
+-->
+<SpaceSystem xmlns="http://www.omg.org/spec/XTCE/20180204" name="FlightShapes">
+  <TelemetryMetaData>
+    <ParameterTypeSet>
+      <IntegerParameterType name="U1">
+        <IntegerDataEncoding sizeInBits="1" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U2">
+        <IntegerDataEncoding sizeInBits="2" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U3">
+        <IntegerDataEncoding sizeInBits="3" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U4">
+        <IntegerDataEncoding sizeInBits="4" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U5">
+        <IntegerDataEncoding sizeInBits="5" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U7">
+        <IntegerDataEncoding sizeInBits="7" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U11">
+        <IntegerDataEncoding sizeInBits="11" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U14">
+        <IntegerDataEncoding sizeInBits="14" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U16">
+        <IntegerDataEncoding sizeInBits="16" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U32">
+        <IntegerDataEncoding sizeInBits="32" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U57">
+        <IntegerDataEncoding sizeInBits="57" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="S16_TWOS">
+        <IntegerDataEncoding sizeInBits="16" encoding="twosComplement"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="S16_ONES">
+        <IntegerDataEncoding sizeInBits="16" encoding="onesComplement"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="S16_SIGNMAG">
+        <IntegerDataEncoding sizeInBits="16" encoding="signMagnitude"/>
+      </IntegerParameterType>
+
+      <FloatParameterType name="F16">
+        <FloatDataEncoding sizeInBits="16" encoding="IEEE754"/>
+      </FloatParameterType>
+      <FloatParameterType name="F32">
+        <FloatDataEncoding sizeInBits="32" encoding="IEEE754"/>
+      </FloatParameterType>
+      <FloatParameterType name="F64">
+        <FloatDataEncoding sizeInBits="64" encoding="IEEE754"/>
+      </FloatParameterType>
+
+      <BooleanParameterType name="ON_OFF" zeroStringValue="OFF" oneStringValue="ON">
+        <IntegerDataEncoding sizeInBits="1" encoding="unsigned"/>
+      </BooleanParameterType>
+
+      <!-- LOW-POWER and 9600 are here on purpose: neither is a Rust identifier, so the
+           generator has to sanitise them without colliding with the others. -->
+      <EnumeratedParameterType name="MODE_T">
+        <IntegerDataEncoding sizeInBits="3" encoding="unsigned"/>
+        <EnumerationList>
+          <Enumeration value="0" label="SAFE"/>
+          <Enumeration value="1" label="NOMINAL"/>
+          <Enumeration value="2" label="SCIENCE"/>
+          <Enumeration value="3" label="LOW-POWER"/>
+          <Enumeration value="4" label="DEORBIT"/>
+        </EnumerationList>
+      </EnumeratedParameterType>
+
+      <EnumeratedParameterType name="BAUD_T">
+        <IntegerDataEncoding sizeInBits="2" encoding="unsigned"/>
+        <EnumerationList>
+          <Enumeration value="0" label="9600"/>
+          <Enumeration value="1" label="19200"/>
+          <Enumeration value="2" label="115200"/>
+        </EnumerationList>
+      </EnumeratedParameterType>
+
+      <!-- The whole buffer is the string, so an encoded value has to fill it exactly. -->
+      <StringParameterType name="BUILD_ID_T">
+        <StringDataEncoding encoding="UTF-8">
+          <SizeInBits>
+            <Fixed><FixedValue>64</FixedValue></Fixed>
+          </SizeInBits>
+        </StringDataEncoding>
+      </StringParameterType>
+
+      <StringParameterType name="LABEL_T">
+        <StringDataEncoding encoding="UTF-8">
+          <SizeInBits>
+            <Fixed><FixedValue>128</FixedValue></Fixed>
+            <TerminationChar>00</TerminationChar>
+          </SizeInBits>
+        </StringDataEncoding>
+      </StringParameterType>
+
+      <StringParameterType name="NOTE_T">
+        <StringDataEncoding encoding="US-ASCII">
+          <SizeInBits>
+            <Fixed><FixedValue>128</FixedValue></Fixed>
+            <LeadingSize sizeInBitsOfSizeTag="8"/>
+          </SizeInBits>
+        </StringDataEncoding>
+      </StringParameterType>
+
+      <BinaryParameterType name="BLOB_T">
+        <BinaryDataEncoding>
+          <SizeInBits>
+            <FixedValue>64</FixedValue>
+          </SizeInBits>
+        </BinaryDataEncoding>
+      </BinaryParameterType>
+    </ParameterTypeSet>
+
+    <ParameterSet>
+      <Parameter name="VERSION" parameterTypeRef="U3"/>
+      <Parameter name="TYPE" parameterTypeRef="U1"/>
+      <Parameter name="SEC_HDR_FLAG" parameterTypeRef="U1"/>
+      <Parameter name="PKT_APID" parameterTypeRef="U11"/>
+      <Parameter name="SEQ_FLGS" parameterTypeRef="U2"/>
+      <Parameter name="SEQ_CTR" parameterTypeRef="U14"/>
+      <Parameter name="PKT_LEN" parameterTypeRef="U16"/>
+
+      <Parameter name="MODE" parameterTypeRef="MODE_T"/>
+      <Parameter name="HEATER_ON" parameterTypeRef="ON_OFF"/>
+      <Parameter name="SPARE_4" parameterTypeRef="U4"/>
+      <Parameter name="BUILD_ID" parameterTypeRef="BUILD_ID_T"/>
+      <Parameter name="LABEL" parameterTypeRef="LABEL_T"/>
+      <Parameter name="NOTE" parameterTypeRef="NOTE_T"/>
+      <Parameter name="BLOB" parameterTypeRef="BLOB_T"/>
+      <Parameter name="TEMP" parameterTypeRef="S16_TWOS"/>
+      <Parameter name="COUNT" parameterTypeRef="U32"/>
+
+      <Parameter name="FLAG_A" parameterTypeRef="U1"/>
+      <Parameter name="BAUD" parameterTypeRef="BAUD_T"/>
+      <Parameter name="SMALL" parameterTypeRef="U7"/>
+      <Parameter name="WIDE_ODD" parameterTypeRef="U57"/>
+      <Parameter name="ONES_ODD" parameterTypeRef="S16_ONES"/>
+      <Parameter name="SIGNMAG_ODD" parameterTypeRef="S16_SIGNMAG"/>
+      <Parameter name="F32_ODD" parameterTypeRef="F32"/>
+      <Parameter name="F64_ODD" parameterTypeRef="F64"/>
+      <Parameter name="F16_ODD" parameterTypeRef="F16"/>
+      <Parameter name="TAIL_PAD" parameterTypeRef="U16"/>
+      <!-- Beacon runs to 275 bits without this; 5 more make it a whole 35 bytes. -->
+      <Parameter name="PAD_5" parameterTypeRef="U5"/>
+    </ParameterSet>
+
+    <ContainerSet>
+      <SequenceContainer name="FlightPacket" abstract="true">
+        <EntryList>
+          <ParameterRefEntry parameterRef="VERSION"/>
+          <ParameterRefEntry parameterRef="TYPE"/>
+          <ParameterRefEntry parameterRef="SEC_HDR_FLAG"/>
+          <ParameterRefEntry parameterRef="PKT_APID"/>
+          <ParameterRefEntry parameterRef="SEQ_FLGS"/>
+          <ParameterRefEntry parameterRef="SEQ_CTR"/>
+          <ParameterRefEntry parameterRef="PKT_LEN"/>
+        </EntryList>
+      </SequenceContainer>
+
+      <!-- Everything here starts on a byte, which is what text and binary require. -->
+      <SequenceContainer name="StatusReport">
+        <EntryList>
+          <ParameterRefEntry parameterRef="MODE"/>
+          <ParameterRefEntry parameterRef="HEATER_ON"/>
+          <ParameterRefEntry parameterRef="SPARE_4"/>
+          <ParameterRefEntry parameterRef="BUILD_ID"/>
+          <ParameterRefEntry parameterRef="LABEL"/>
+          <ParameterRefEntry parameterRef="NOTE"/>
+          <ParameterRefEntry parameterRef="BLOB"/>
+          <ParameterRefEntry parameterRef="TEMP"/>
+          <ParameterRefEntry parameterRef="COUNT"/>
+        </EntryList>
+        <BaseContainer containerRef="FlightPacket">
+          <RestrictionCriteria>
+            <ComparisonList>
+              <Comparison parameterRef="VERSION" value="0" useCalibratedValue="false"/>
+              <Comparison parameterRef="PKT_APID" value="100" useCalibratedValue="false"/>
+            </ComparisonList>
+          </RestrictionCriteria>
+        </BaseContainer>
+      </SequenceContainer>
+
+      <!-- FLAG_A pushes everything after it one bit past a boundary. -->
+      <SequenceContainer name="Beacon">
+        <EntryList>
+          <ParameterRefEntry parameterRef="FLAG_A"/>
+          <ParameterRefEntry parameterRef="SMALL"/>
+          <ParameterRefEntry parameterRef="WIDE_ODD"/>
+          <ParameterRefEntry parameterRef="ONES_ODD"/>
+          <ParameterRefEntry parameterRef="SIGNMAG_ODD"/>
+          <ParameterRefEntry parameterRef="F32_ODD"/>
+          <ParameterRefEntry parameterRef="F64_ODD"/>
+          <ParameterRefEntry parameterRef="F16_ODD"/>
+          <ParameterRefEntry parameterRef="BAUD"/>
+          <ParameterRefEntry parameterRef="TAIL_PAD"/>
+          <ParameterRefEntry parameterRef="PAD_5"/>
+        </EntryList>
+        <BaseContainer containerRef="FlightPacket">
+          <RestrictionCriteria>
+            <ComparisonList>
+              <Comparison parameterRef="VERSION" value="0" useCalibratedValue="false"/>
+              <Comparison parameterRef="PKT_APID" value="101" useCalibratedValue="false"/>
+            </ComparisonList>
+          </RestrictionCriteria>
+        </BaseContainer>
+      </SequenceContainer>
+    </ContainerSet>
+  </TelemetryMetaData>
+</SpaceSystem>

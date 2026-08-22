@@ -1,0 +1,21 @@
+[package]
+name = "xtce-flight-e2e"
+description = "Encodes with the generated flight code and decodes with an independent interpreter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[build-dependencies]
+xtce-flight.workspace = true
+xtce-model.workspace = true
+
+[dev-dependencies]
+xtce-model.workspace = true
+xtce-decode.workspace = true

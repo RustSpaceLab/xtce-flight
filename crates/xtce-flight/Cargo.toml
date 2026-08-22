@@ -1,0 +1,32 @@
+[package]
+name = "xtce-flight"
+description = "Compile an XTCE definition into a no_std, allocation-free Rust encoder and decoder for on-board use"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "xtce-flight"
+path = "src/bin/xtce-flight.rs"
+
+[dependencies]
+xtce-model.workspace = true
+xtce-codegen.workspace = true
+prettyplease.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+thiserror.workspace = true
+
+clap = { workspace = true, optional = true }
+
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
+
+[[test]]
+name = "layout"
+path = "tests/layout.rs"

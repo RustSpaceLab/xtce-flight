@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned rather than `stable`. Clippy gains lints with every release, so an unpinned
+      # gate turns red for reasons unrelated to any change here, and cannot be reproduced
+      # locally without guessing which toolchain the runner picked up. New lints are still
+      # surfaced, by the advisory job below.
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # `-D warnings` goes to clippy rather than into RUSTFLAGS: as an environment variable
+      # it would apply to dependencies too, and an unrelated crate emitting a warning would
+      # fail this build for a reason nothing here can fix.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The one that matters: encode with the generated code, decode with `xtce-decode`,
+      # compare against the values that went in.
+      - name: Test
+        run: cargo test --workspace
+
+  flight:
+    name: bare metal, no panic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          components: clippy
+          targets: thumbv7em-none-eabihf
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target\nprobes/nostd -> target"
+
+      # `no_std` and no `unsafe` are crate attributes on the probe, so this failing to build
+      # is the check.
+      - name: Build for Cortex-M4F
+        run: >
+          cargo build --release
+          --manifest-path probes/nostd/Cargo.toml
+          --target thumbv7em-none-eabihf
+
+      - name: Clippy on the bare-metal build
+        run: >
+          cargo clippy --release
+          --manifest-path probes/nostd/Cargo.toml
+          --target thumbv7em-none-eabihf
+          -- -D warnings
+
+      # Reads the emitted LLVM IR and fails on any reference to `core::panicking`. The
+      # script also fails if the probe's own functions are missing from the IR, so it cannot
+      # pass by having optimised away the code it is supposed to inspect.
+      - name: No panic path
+        run: ./scripts/check-no-panic.sh thumbv7em-none-eabihf
+
+  latest:
+    name: latest stable (advisory)
+    runs-on: ubuntu-latest
+    # New lints are worth knowing about, but they are not this repository's fault and must
+    # not block a merge on the day they ship.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: ./scripts/check-no-panic.sh thumbv7em-none-eabihf
+
+  msrv:
+    name: minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      # Build rather than test: the version floor is a promise about compiling this code,
+      # and dev-dependencies drag in crates with floors of their own.
+      - run: cargo build --workspace

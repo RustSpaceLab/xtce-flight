@@ -1,0 +1,1344 @@
+//! Turning a [`Layout`] into Rust source.
+//!
+//! Two rules shape everything here.
+//!
+//! **Every index is a literal.** `encode` and `decode` convert the caller's slice to a
+//! reference to a fixed-size array once, at the top, and everything after that indexes the
+//! array at offsets computed when this file was generated. A literal index into an array of
+//! known length is provably in bounds, so no bounds check survives optimisation and no
+//! panicking branch is emitted. That is the whole reason for the conversion; a slice would
+//! leave a panic path behind every one of them.
+//!
+//! **A value that does not fit is an error, not a truncation.** A 12-bit field takes a `u16`,
+//! and the range that does not fit in twelve bits is rejected. Masking silently would put a
+//! wrong number in a packet that is otherwise perfectly well formed, which is the failure
+//! mode hardest to see from the ground.
+
+use std::collections::BTreeSet;
+
+use proc_macro2::{Ident, Literal, Span, TokenStream};
+use quote::{format_ident, quote};
+use xtce_codegen::plan::{TextCharset, TextDelimiter};
+use xtce_model::types::IntegerCoding;
+
+use crate::layout::{Container, EnumType, FlightField, Kind, Layout, mask_for, natural_bits};
+
+/// Renders the whole module.
+pub fn module(layout: &Layout, source: &str) -> String {
+    let header = header(layout, source);
+
+    let enums = layout.enums.iter().map(enumeration);
+    let containers = layout
+        .containers
+        .iter()
+        .map(|item| container(item, &layout.enums));
+    let dispatcher = dispatcher(layout);
+    let helpers = helpers(layout);
+
+    let tokens = quote! {
+        #(#enums)*
+        #(#containers)*
+        #dispatcher
+        #helpers
+    };
+
+    let body = match syn::parse2(tokens.clone()) {
+        Ok(file) => prettyplease::unparse(&file),
+        // Unparsed source is still valid Rust; only the formatting is lost. Failing the whole
+        // generation because the pretty-printer choked would be the wrong trade.
+        Err(_) => tokens.to_string(),
+    };
+    format!("{header}{body}")
+}
+
+fn header(layout: &Layout, source: &str) -> String {
+    let mut text = format!(
+        "// Flight encoder and decoder generated from `{source}` by `xtce-flight`, rooted at \
+         `{}`.\n//\n\
+         // {} container(s). Every bit offset, mask and length below was computed when this\n\
+         // file was generated; nothing consults the XTCE definition at run time.\n//\n\
+         // The code is `no_std`: it names nothing outside `core`, allocates nothing, and\n\
+         // contains no `unsafe`. `encode` and `decode` have no panicking branch.\n//\n\
+         // Do not edit: regenerate instead. Intended to be included inside a module that\n\
+         // carries the lint allowances generated code needs, for example:\n//\n\
+         //     #[allow(dead_code, clippy::all, clippy::pedantic)]\n\
+         //     mod telemetry {{\n\
+         //         include!(concat!(env!(\"OUT_DIR\"), \"/telemetry.rs\"));\n\
+         //     }}\n\n",
+        layout.root_name,
+        layout.containers.len(),
+    );
+    for container in &layout.containers {
+        let _ = std::fmt::Write::write_fmt(
+            &mut text,
+            format_args!(
+                "// {:<28} {:>5} byte(s), {} field(s), {} constant(s)\n",
+                container.xtce_name,
+                container.len_bytes,
+                container.fields.len(),
+                container.constants.len(),
+            ),
+        );
+    }
+    text.push('\n');
+    text
+}
+
+// ---------------------------------------------------------------------------------------
+// Enumerations
+// ---------------------------------------------------------------------------------------
+
+fn enumeration(definition: &EnumType) -> TokenStream {
+    let name = ident(&definition.type_ident);
+    let variants = definition.variants.iter().map(|(variant, _, label)| {
+        let variant = ident(variant);
+        let doc = format!("XTCE label `{label}`.");
+        quote! {
+            #[doc = #doc]
+            #variant
+        }
+    });
+
+    let to_raw = definition.variants.iter().map(|(variant, raw, _)| {
+        let variant = ident(variant);
+        let raw = Literal::u64_unsuffixed(*raw);
+        quote! { Self::#variant => #raw }
+    });
+    let from_raw = definition.variants.iter().map(|(variant, raw, _)| {
+        let variant = ident(variant);
+        let raw = Literal::u64_unsuffixed(*raw);
+        quote! { #raw => Some(Self::#variant) }
+    });
+    let labels = definition.variants.iter().map(|(variant, _, label)| {
+        let variant = ident(variant);
+        quote! { Self::#variant => #label }
+    });
+
+    let doc = format!(
+        "An enumerated parameter, with {} label(s) from the definition.",
+        definition.variants.len()
+    );
+
+    quote! {
+        #[doc = #doc]
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum #name {
+            #(#variants,)*
+        }
+
+        impl #name {
+            /// The value written into the packet.
+            #[must_use]
+            pub const fn raw(self) -> u64 {
+                match self {
+                    #(#to_raw,)*
+                }
+            }
+
+            /// The variant a raw value selects, or `None` if the definition has no label
+            /// for it.
+            #[must_use]
+            pub const fn from_raw(raw: u64) -> Option<Self> {
+                match raw {
+                    #(#from_raw,)*
+                    _ => None,
+                }
+            }
+
+            /// The label exactly as the definition spells it, which is not always a Rust
+            /// identifier.
+            #[must_use]
+            pub const fn label(self) -> &'static str {
+                match self {
+                    #(#labels,)*
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Containers
+// ---------------------------------------------------------------------------------------
+
+fn container(container: &Container, enums: &[EnumType]) -> TokenStream {
+    let name = ident(&container.type_ident);
+    let len = Literal::usize_unsuffixed(container.len_bytes);
+
+    let lifetime = if container.borrows {
+        quote!(<'a>)
+    } else {
+        quote!()
+    };
+    let struct_fields = container.fields.iter().map(|field| {
+        let ident = ident(&field.ident);
+        let ty = field_type(field, enums);
+        let doc = format!(
+            "`{}`, {} bit(s) at bit {}.",
+            field.xtce_name, field.bit_width, field.bit_offset
+        );
+        quote! {
+            #[doc = #doc]
+            pub #ident: #ty
+        }
+    });
+
+    let constant_doc = if container.constants.is_empty() {
+        String::new()
+    } else {
+        let listed = container
+            .constants
+            .iter()
+            .map(|constant| format!("`{}` = {}", constant.xtce_name, constant.raw))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "\n\nEncoding also writes the restriction criteria that identify this container \
+             ({listed}); they are not fields because they are not the caller's to choose."
+        )
+    };
+    let doc = format!(
+        "`{}`, {} byte(s) on the wire.{constant_doc}",
+        container.xtce_name, container.len_bytes
+    );
+
+    let encode = encode_body(container);
+    let decode = decode_body(container, enums);
+    let matches = matches_body(container);
+
+    quote! {
+        #[doc = #doc]
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        pub struct #name #lifetime {
+            #(#struct_fields,)*
+        }
+
+        impl #lifetime #name #lifetime {
+            /// Encoded size, in bytes.
+            pub const LEN: usize = #len;
+
+            #encode
+            #decode
+            #matches
+        }
+    }
+}
+
+/// The Rust type a field's value has in the struct.
+fn field_type(field: &FlightField, enums: &[EnumType]) -> TokenStream {
+    match &field.kind {
+        Kind::Unsigned => unsigned_type(natural_bits(field.bit_width)),
+        Kind::Signed(_) => signed_type(natural_bits(field.bit_width)),
+        Kind::Float16 | Kind::Float32 => quote!(f32),
+        Kind::Float64 => quote!(f64),
+        Kind::Bool => quote!(bool),
+        Kind::Enumerated(index) => enum_name(*index, enums),
+        Kind::Text { .. } => quote!(&'a str),
+        Kind::Binary => quote!(&'a [u8]),
+    }
+}
+
+/// The generated enum's name, by index into the layout's list.
+fn enum_name(index: usize, enums: &[EnumType]) -> TokenStream {
+    // `layout` builds both sides of this index, so it always resolves. Emitting the unit
+    // type rather than panicking keeps the generator total.
+    let Some(definition) = enums.get(index) else {
+        return quote!(());
+    };
+    let name = ident(&definition.type_ident);
+    quote!(#name)
+}
+
+fn unsigned_type(bits: u32) -> TokenStream {
+    match bits {
+        8 => quote!(u8),
+        16 => quote!(u16),
+        32 => quote!(u32),
+        _ => quote!(u64),
+    }
+}
+
+fn signed_type(bits: u32) -> TokenStream {
+    match bits {
+        8 => quote!(i8),
+        16 => quote!(i16),
+        32 => quote!(i32),
+        _ => quote!(i64),
+    }
+}
+
+fn ident(name: &str) -> Ident {
+    Ident::new(name, Span::call_site())
+}
+
+// ---------------------------------------------------------------------------------------
+// Encoding
+// ---------------------------------------------------------------------------------------
+
+fn encode_body(container: &Container) -> TokenStream {
+    let len = Literal::usize_unsuffixed(container.len_bytes);
+    let out = format_ident!("out");
+
+    // Named after the parameter, because a comment cannot survive `quote!` and a reviewer
+    // reading the generated encoder should still be able to see which criterion this is.
+    let constants = container.constants.iter().map(|constant| {
+        let binding = format_ident!(
+            "criterion_{}",
+            xtce_codegen::plan::field_ident(&constant.xtce_name)
+        );
+        let raw = Literal::u64_unsuffixed(constant.raw);
+        let write = write_bits(
+            constant.bit_offset,
+            constant.bit_width,
+            &quote!(#binding),
+            &out,
+        );
+        quote! {
+            {
+                let #binding: u64 = #raw;
+                #write
+            }
+        }
+    });
+
+    let fields = container
+        .fields
+        .iter()
+        .map(|field| encode_field(field, &out));
+
+    quote! {
+        /// Writes this packet into `out`, returning how many bytes were written.
+        ///
+        /// # Errors
+        ///
+        /// [`EncodeError::TooShort`] if `out` is smaller than [`Self::LEN`], and
+        /// [`EncodeError::OutOfRange`] naming the parameter if a value does not fit the
+        /// bits the definition gives it. Nothing is truncated silently.
+        pub fn encode(&self, out: &mut [u8]) -> Result<usize, EncodeError> {
+            // One conversion, and every index below is a literal into an array of known
+            // length: in bounds by construction, so no bounds check and no panic remain.
+            let out: &mut [u8; #len] = match out.get_mut(..#len) {
+                Some(slice) => match <&mut [u8; #len]>::try_from(slice) {
+                    Ok(array) => array,
+                    Err(_) => return Err(EncodeError::TooShort { needed: #len }),
+                },
+                None => return Err(EncodeError::TooShort { needed: #len }),
+            };
+
+            // Bits are written with `|`, because two fields can share a byte. That only
+            // gives the right answer over a clean buffer.
+            *out = [0u8; #len];
+
+            #(#constants)*
+            #(#fields)*
+
+            Ok(#len)
+        }
+    }
+}
+
+fn encode_field(field: &FlightField, out: &Ident) -> TokenStream {
+    let value = {
+        let ident = ident(&field.ident);
+        quote!(self.#ident)
+    };
+    let name = &field.xtce_name;
+
+    match &field.kind {
+        Kind::Text { charset, delimiter } => {
+            return encode_text(field, &value, *charset, delimiter, out);
+        }
+        Kind::Binary => return encode_binary(field, &value, out),
+        _ => {}
+    }
+
+    let raw = raw_from_value(field, &value);
+    let check = range_check(field, &value, name);
+    // `field_ident` escapes a keyword by appending an underscore, and `type__bits` is not a
+    // snake-case name.
+    let binding = format_ident!("{}_bits", field.ident.trim_end_matches('_'));
+    let write = write_bits(field.bit_offset, field.bit_width, &quote!(#binding), out);
+
+    quote! {
+        {
+            #check
+            let #binding: u64 = #raw;
+            #write
+        }
+    }
+}
+
+/// The expression turning a field's typed value into the bits that go into the packet.
+fn raw_from_value(field: &FlightField, value: &TokenStream) -> TokenStream {
+    let mask = Literal::u64_unsuffixed(mask_for(field.bit_width));
+    match &field.kind {
+        // `Unsigned` under `Signed` is XTCE's way of saying a signed parameter carries an
+        // unsigned encoding; the bits are written the same way either way.
+        Kind::Unsigned | Kind::Signed(IntegerCoding::Unsigned) => {
+            quote!(#value as u64 & #mask)
+        }
+        Kind::Signed(IntegerCoding::TwosComplement) => quote!(#value as i64 as u64 & #mask),
+        Kind::Signed(IntegerCoding::SignMagnitude) => {
+            let sign = Literal::u64_unsuffixed(1u64 << (field.bit_width - 1));
+            quote! {
+                if #value < 0 {
+                    #sign | (#value as i64).unsigned_abs()
+                } else {
+                    #value as u64
+                }
+            }
+        }
+        Kind::Signed(IntegerCoding::OnesComplement) => {
+            // A negative number is the bitwise complement of its magnitude, which within the
+            // field's width is the magnitude exclusive-or'd with the mask.
+            quote! {
+                if #value < 0 {
+                    #mask ^ (#value as i64).unsigned_abs()
+                } else {
+                    #value as u64
+                }
+            }
+        }
+        Kind::Float16 => quote!(f32_to_half(#value) as u64),
+        Kind::Float32 => quote!(#value.to_bits() as u64),
+        Kind::Float64 => quote!(#value.to_bits()),
+        Kind::Bool => quote!(if #value { 1 } else { 0 }),
+        Kind::Enumerated(_) => quote!(#value.raw()),
+        // Handled before this function is reached.
+        Kind::Text { .. } | Kind::Binary => quote!(0),
+    }
+}
+
+/// The guard that rejects a value the field cannot hold.
+///
+/// A float always fits: its width picks its type. An integer usually does not — a 12-bit
+/// field takes a `u16`, and three quarters of a `u16` do not fit in it.
+fn range_check(field: &FlightField, value: &TokenStream, name: &str) -> TokenStream {
+    let natural = natural_bits(field.bit_width);
+    let width = field.bit_width;
+
+    match &field.kind {
+        Kind::Unsigned => {
+            if width >= natural {
+                return quote!();
+            }
+            let max = Literal::u64_unsuffixed(mask_for(width));
+            quote! {
+                if #value as u64 > #max {
+                    return Err(EncodeError::OutOfRange { parameter: #name });
+                }
+            }
+        }
+        Kind::Signed(IntegerCoding::TwosComplement | IntegerCoding::Unsigned) => {
+            if width >= natural {
+                return quote!();
+            }
+            let min = Literal::i64_unsuffixed(-(1i64 << (width - 1)));
+            let max = Literal::i64_unsuffixed((1i64 << (width - 1)) - 1);
+            quote! {
+                if (#value as i64) < #min || (#value as i64) > #max {
+                    return Err(EncodeError::OutOfRange { parameter: #name });
+                }
+            }
+        }
+        // Sign-magnitude and ones' complement both spend a bit on the sign and have two
+        // spellings of zero, so their range is symmetric and one short of two's complement
+        // at the bottom. That holds even at the full width of the Rust type, which is why
+        // this check is not skipped the way the two's-complement one is.
+        Kind::Signed(IntegerCoding::SignMagnitude | IntegerCoding::OnesComplement) => {
+            let magnitude = Literal::u64_unsuffixed((1u64 << (width - 1)) - 1);
+            quote! {
+                if (#value as i64).unsigned_abs() > #magnitude {
+                    return Err(EncodeError::OutOfRange { parameter: #name });
+                }
+            }
+        }
+        _ => quote!(),
+    }
+}
+
+fn encode_text(
+    field: &FlightField,
+    value: &TokenStream,
+    charset: TextCharset,
+    delimiter: &TextDelimiter,
+    out: &Ident,
+) -> TokenStream {
+    let name = &field.xtce_name;
+    let start = field.bit_offset / 8;
+    let len = field.bit_width as usize / 8;
+    let ascii_check = if matches!(charset, TextCharset::UsAscii) {
+        quote! {
+            if !#value.is_ascii() {
+                return Err(EncodeError::InvalidText { parameter: #name });
+            }
+        }
+    } else {
+        quote!()
+    };
+
+    let body = match delimiter {
+        TextDelimiter::WholeBuffer => {
+            let len_literal = Literal::usize_unsuffixed(len);
+            let copy = copy_into(start, len, &quote!(bytes), out);
+            quote! {
+                let bytes = #value.as_bytes();
+                // The whole buffer is the string, so a shorter one would decode with its
+                // padding attached. Requiring the exact length keeps encode and decode
+                // inverses of each other; padding, if a mission wants it, is the caller's.
+                if bytes.len() != #len_literal {
+                    return Err(EncodeError::TextLength { parameter: #name });
+                }
+                #copy
+            }
+        }
+        TextDelimiter::TerminationChar(terminator) => {
+            let terminator_len = terminator.len();
+            let start_literal = Literal::usize_unsuffixed(start);
+            let room = Literal::usize_unsuffixed(len.saturating_sub(terminator_len));
+            let bytes = terminator.iter().map(|byte| Literal::u8_unsuffixed(*byte));
+            let copy = copy_into(start, len, &quote!(bytes), out);
+            let write_terminator = (0..terminator_len).map(|index| {
+                let at = Literal::usize_unsuffixed(index);
+                quote! { slot[#at] = TERMINATOR[#at]; }
+            });
+            let terminator_len_literal = Literal::usize_unsuffixed(terminator_len);
+            quote! {
+                const TERMINATOR: &[u8] = &[#(#bytes),*];
+                let bytes = #value.as_bytes();
+                if bytes.len() > #room {
+                    return Err(EncodeError::TextLength { parameter: #name });
+                }
+                // A terminator inside the string would make the decoded value a prefix of
+                // what was encoded — a silent corruption rather than a failure.
+                if find(bytes, TERMINATOR).is_some() {
+                    return Err(EncodeError::EmbeddedTerminator { parameter: #name });
+                }
+                #copy
+                // The buffer is already zero, so only the terminator itself is written.
+                let at = #start_literal + bytes.len();
+                match #out.get_mut(at..at + #terminator_len_literal) {
+                    Some(slot) => { #(#write_terminator)* }
+                    None => return Err(EncodeError::TextLength { parameter: #name }),
+                }
+            }
+        }
+        TextDelimiter::LeadingSize { size_in_bits } => {
+            let prefix_bytes = *size_in_bits as usize / 8;
+            let room = Literal::usize_unsuffixed(len.saturating_sub(prefix_bytes));
+            let max_bits = Literal::u64_unsuffixed(mask_for(*size_in_bits));
+            let write_prefix =
+                write_bits(field.bit_offset, *size_in_bits, &quote!(length_bits), out);
+            let copy = copy_into(
+                start + prefix_bytes,
+                len - prefix_bytes,
+                &quote!(bytes),
+                out,
+            );
+            quote! {
+                let bytes = #value.as_bytes();
+                if bytes.len() > #room {
+                    return Err(EncodeError::TextLength { parameter: #name });
+                }
+                // The prefix counts bits, as XTCE specifies, not bytes.
+                let length_bits = bytes.len() as u64 * 8;
+                if length_bits > #max_bits {
+                    return Err(EncodeError::TextLength { parameter: #name });
+                }
+                #write_prefix
+                #copy
+            }
+        }
+    };
+
+    quote! {
+        {
+            #ascii_check
+            #body
+        }
+    }
+}
+
+fn encode_binary(field: &FlightField, value: &TokenStream, out: &Ident) -> TokenStream {
+    let name = &field.xtce_name;
+    let start = field.bit_offset / 8;
+    let len = field.bit_width as usize / 8;
+    let len_literal = Literal::usize_unsuffixed(len);
+    let copy = copy_into(start, len, &quote!(bytes), out);
+
+    quote! {
+        {
+            let bytes: &[u8] = #value;
+            // Fixed-size binary has no delimiter, so a short value cannot be told from a
+            // padded one on the way back.
+            if bytes.len() != #len_literal {
+                return Err(EncodeError::BinaryLength { parameter: #name });
+            }
+            #copy
+        }
+    }
+}
+
+/// Copies at most `len` bytes into the buffer at `start`.
+///
+/// `zip` rather than `copy_from_slice`: the latter panics when the lengths differ, and the
+/// point of this generator is that no such branch exists. The lengths have already been
+/// checked, so the two are equivalent here — except in what they leave in the binary.
+fn copy_into(start: usize, len: usize, source: &TokenStream, out: &Ident) -> TokenStream {
+    let from = Literal::usize_unsuffixed(start);
+    let to = Literal::usize_unsuffixed(start + len);
+    quote! {
+        for (slot, byte) in #out[#from..#to].iter_mut().zip(#source) {
+            *slot = *byte;
+        }
+    }
+}
+
+/// Writes `width` bits of `value` at `offset`, by `or`-ing them into the bytes they touch.
+///
+/// The mirror of the read in `xtce-codegen`: the same span, the same shift, the same choice
+/// of the narrowest integer that covers the span. Nine bytes is not a hypothetical — a
+/// 64-bit field one bit off a boundary needs `u128` here for the same reason it needs it
+/// there, and getting it wrong loses the top of the field rather than failing.
+fn write_bits(offset: usize, width: u32, value: &TokenStream, out: &Ident) -> TokenStream {
+    let first = offset / 8;
+    let last = (offset + width as usize - 1) / 8;
+    let span = last - first + 1;
+    let bit_in_byte = (offset % 8) as u32;
+
+    let slots = match span {
+        1 => 1usize,
+        2 => 2,
+        3..=4 => 4,
+        5..=8 => 8,
+        _ => 16,
+    };
+    let pad = slots - span;
+    let shift = (span as u32) * 8 - bit_in_byte - width;
+    let whole = shift == 0 && width == (span as u32) * 8;
+
+    let accumulator = match slots {
+        1 => quote!(u8),
+        2 => quote!(u16),
+        4 => quote!(u32),
+        8 => quote!(u64),
+        _ => quote!(u128),
+    };
+
+    // The cast is parenthesised whenever a shift follows it. `x as u64 << 8` does not
+    // parse — the type after `as` takes the `<<` for the start of generic arguments — and
+    // there is nothing else here to supply the parentheses by accident.
+    let shifted = if shift == 0 {
+        quote!(#value as #accumulator)
+    } else {
+        let shift = Literal::u32_unsuffixed(shift);
+        quote!((#value as #accumulator) << #shift)
+    };
+
+    if slots == 1 {
+        let index = Literal::usize_unsuffixed(first);
+        // A field that owns its whole byte has nothing to preserve in it.
+        return if whole {
+            quote! { #out[#index] = #shifted; }
+        } else {
+            quote! { #out[#index] |= #shifted; }
+        };
+    }
+
+    let combined = if whole {
+        shifted
+    } else {
+        let existing = (0..pad)
+            .map(|_| quote!(0))
+            .chain((first..=last).map(|index| {
+                let index = Literal::usize_unsuffixed(index);
+                quote! { #out[#index] }
+            }));
+        quote!(#accumulator::from_be_bytes([#(#existing),*]) | #shifted)
+    };
+
+    let stores = (0..span).map(|index| {
+        let target = Literal::usize_unsuffixed(first + index);
+        let source = Literal::usize_unsuffixed(pad + index);
+        quote! { #out[#target] = bytes[#source]; }
+    });
+
+    quote! {
+        {
+            let bytes = (#combined).to_be_bytes();
+            #(#stores)*
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Decoding
+// ---------------------------------------------------------------------------------------
+
+fn decode_body(container: &Container, enums: &[EnumType]) -> TokenStream {
+    let len = Literal::usize_unsuffixed(container.len_bytes);
+    let data = format_ident!("data");
+
+    let bindings = container
+        .fields
+        .iter()
+        .map(|field| decode_field(field, &data, enums));
+    let names = container.fields.iter().map(|field| ident(&field.ident));
+
+    let lifetime = if container.borrows {
+        quote!(&'a [u8])
+    } else {
+        quote!(&[u8])
+    };
+
+    quote! {
+        /// Reads this packet out of `data`.
+        ///
+        /// The inverse of [`Self::encode`]: everything `encode` writes, `decode` gives back
+        /// unchanged. It does not check the restriction criteria — use
+        /// [`Self::matches`] for that, or the module's `decode` to choose a container.
+        ///
+        /// # Errors
+        ///
+        /// [`DecodeError::TooShort`] if `data` is smaller than [`Self::LEN`], and a variant
+        /// naming the parameter if its bytes are not a value the definition allows.
+        pub fn decode(data: #lifetime) -> Result<Self, DecodeError> {
+            let data: &[u8; #len] = match data.get(..#len) {
+                Some(slice) => match <&[u8; #len]>::try_from(slice) {
+                    Ok(array) => array,
+                    Err(_) => return Err(DecodeError::TooShort { needed: #len }),
+                },
+                None => return Err(DecodeError::TooShort { needed: #len }),
+            };
+
+            #(#bindings)*
+
+            Ok(Self { #(#names,)* })
+        }
+    }
+}
+
+fn decode_field(field: &FlightField, data: &Ident, enums: &[EnumType]) -> TokenStream {
+    let name = ident(&field.ident);
+    let xtce_name = &field.xtce_name;
+
+    let value = match &field.kind {
+        Kind::Text { charset, delimiter } => decode_text(field, *charset, delimiter, data),
+        Kind::Binary => {
+            let slice = byte_slice(field, data);
+            quote!(#slice)
+        }
+        Kind::Bool => {
+            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            quote!((#raw) != 0)
+        }
+        Kind::Enumerated(index) => {
+            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let ty = enum_name(*index, enums);
+            quote! {
+                match #ty::from_raw(#raw) {
+                    Some(value) => value,
+                    None => return Err(DecodeError::UnknownLabel { parameter: #xtce_name }),
+                }
+            }
+        }
+        Kind::Float16 => {
+            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            quote!(half_to_f32((#raw) as u16))
+        }
+        Kind::Float32 => {
+            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            quote!(f32::from_bits((#raw) as u32))
+        }
+        Kind::Float64 => {
+            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            quote!(f64::from_bits(#raw))
+        }
+        Kind::Unsigned => {
+            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let ty = unsigned_type(natural_bits(field.bit_width));
+            quote!((#raw) as #ty)
+        }
+        Kind::Signed(coding) => {
+            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let ty = signed_type(natural_bits(field.bit_width));
+            let signed = signed_from_raw(&raw, field.bit_width, *coding);
+            quote!(#signed as #ty)
+        }
+    };
+
+    quote! { let #name = #value; }
+}
+
+/// The `i64` a raw field means, under one of XTCE's three signed codings.
+///
+/// Written to be the exact inverse of what `xtce-decode` computes, because that is the
+/// oracle the round trip is checked against.
+fn signed_from_raw(raw: &TokenStream, width: u32, coding: IntegerCoding) -> TokenStream {
+    match coding {
+        IntegerCoding::Unsigned => quote!((#raw) as i64),
+        IntegerCoding::TwosComplement => {
+            // Sign-extend by shifting up and back down. Subtracting `2^width` overflows at
+            // width 63.
+            let shift = Literal::u32_unsuffixed(64 - width);
+            quote! { ((((#raw) << #shift) as i64) >> #shift) }
+        }
+        IntegerCoding::SignMagnitude => {
+            let sign = Literal::u64_unsuffixed(1u64 << (width - 1));
+            let magnitude = Literal::u64_unsuffixed((1u64 << (width - 1)) - 1);
+            quote! {
+                {
+                    let raw = #raw;
+                    let magnitude = (raw & #magnitude) as i64;
+                    if raw & #sign == 0 { magnitude } else { -magnitude }
+                }
+            }
+        }
+        IntegerCoding::OnesComplement => {
+            let sign = Literal::u64_unsuffixed(1u64 << (width - 1));
+            let mask = Literal::u64_unsuffixed(mask_for(width));
+            quote! {
+                {
+                    let raw = #raw;
+                    if raw & #sign == 0 {
+                        raw as i64
+                    } else {
+                        -(((!raw) & #mask) as i64)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn decode_text(
+    field: &FlightField,
+    charset: TextCharset,
+    delimiter: &TextDelimiter,
+    data: &Ident,
+) -> TokenStream {
+    let name = &field.xtce_name;
+    let buffer = byte_slice(field, data);
+    let ascii = matches!(charset, TextCharset::UsAscii);
+
+    let bytes = match delimiter {
+        TextDelimiter::WholeBuffer => quote!(#buffer),
+        TextDelimiter::TerminationChar(terminator) => {
+            let literals = terminator.iter().map(|byte| Literal::u8_unsuffixed(*byte));
+            quote! {
+                {
+                    const TERMINATOR: &[u8] = &[#(#literals),*];
+                    let buffer = #buffer;
+                    match find(buffer, TERMINATOR) {
+                        Some(end) => match buffer.get(..end) {
+                            Some(text) => text,
+                            None => return Err(DecodeError::UnterminatedString { parameter: #name }),
+                        },
+                        None => return Err(DecodeError::UnterminatedString { parameter: #name }),
+                    }
+                }
+            }
+        }
+        TextDelimiter::LeadingSize { size_in_bits } => {
+            let prefix_bytes = Literal::usize_unsuffixed(*size_in_bits as usize / 8);
+            let prefix = read_bits(field.bit_offset, *size_in_bits, data);
+            quote! {
+                {
+                    let buffer = #buffer;
+                    let length_bits = #prefix;
+                    if length_bits % 8 != 0 {
+                        return Err(DecodeError::BadStringLength { parameter: #name });
+                    }
+                    let length = (length_bits / 8) as usize;
+                    match buffer.get(#prefix_bytes..#prefix_bytes + length) {
+                        Some(text) => text,
+                        None => return Err(DecodeError::BadStringLength { parameter: #name }),
+                    }
+                }
+            }
+        }
+    };
+
+    let ascii_check = if ascii {
+        quote! {
+            if !text.is_ascii() {
+                return Err(DecodeError::InvalidText { parameter: #name });
+            }
+        }
+    } else {
+        quote!()
+    };
+
+    quote! {
+        {
+            let text = #bytes;
+            #ascii_check
+            match core::str::from_utf8(text) {
+                Ok(text) => text,
+                Err(_) => return Err(DecodeError::InvalidText { parameter: #name }),
+            }
+        }
+    }
+}
+
+/// A byte-aligned field's bytes, as a slice of the packet.
+fn byte_slice(field: &FlightField, data: &Ident) -> TokenStream {
+    let from = Literal::usize_unsuffixed(field.bit_offset / 8);
+    let to = Literal::usize_unsuffixed((field.bit_offset + field.bit_width as usize) / 8);
+    quote!(&#data[#from..#to])
+}
+
+/// Reads `width` bits at `offset` as a `u64`.
+fn read_bits(offset: usize, width: u32, data: &Ident) -> TokenStream {
+    let first = offset / 8;
+    let last = (offset + width as usize - 1) / 8;
+    let span = last - first + 1;
+    let bit_in_byte = (offset % 8) as u32;
+    let mask = mask_for(width);
+
+    let slots = match span {
+        1 => 1usize,
+        2 => 2,
+        3..=4 => 4,
+        5..=8 => 8,
+        _ => 16,
+    };
+    let pad = slots - span;
+    let shift = (span as u32) * 8 - bit_in_byte - width;
+
+    let load = if slots == 1 {
+        let index = Literal::usize_unsuffixed(first);
+        quote!(#data[#index])
+    } else {
+        let bytes = (0..pad)
+            .map(|_| quote!(0))
+            .chain((first..=last).map(|index| {
+                let index = Literal::usize_unsuffixed(index);
+                quote! { #data[#index] }
+            }));
+        let ty = match slots {
+            2 => quote!(u16),
+            4 => quote!(u32),
+            8 => quote!(u64),
+            _ => quote!(u128),
+        };
+        quote!(#ty::from_be_bytes([#(#bytes),*]))
+    };
+
+    // A nine-byte span is loaded as `u128` and has to stay one until after the shift:
+    // narrowing first drops exactly the bits it was widened for.
+    if slots == 16 {
+        let mask = Literal::u64_unsuffixed(mask);
+        let shift = Literal::u32_unsuffixed(shift);
+        return quote!(((#load >> #shift) as u64) & #mask);
+    }
+
+    let mask = Literal::u64_unsuffixed(mask);
+    if shift == 0 {
+        quote!(#load as u64 & #mask)
+    } else {
+        let shift = Literal::u32_unsuffixed(shift);
+        quote!(((#load as u64) >> #shift) & #mask)
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------------------
+
+/// `matches`: whether a buffer carries this container's restriction criteria.
+fn matches_body(container: &Container) -> TokenStream {
+    let len = Literal::usize_unsuffixed(container.len_bytes);
+    let data = format_ident!("data");
+
+    let tests = container.constants.iter().map(|constant| {
+        let read = read_bits(constant.bit_offset, constant.bit_width, &data);
+        let expected = Literal::u64_unsuffixed(constant.raw);
+        quote! {
+            if (#read) != #expected {
+                return false;
+            }
+        }
+    });
+
+    quote! {
+        /// Whether `data` satisfies the restriction criteria that select this container.
+        ///
+        /// A container with no criteria matches anything long enough to hold it.
+        #[must_use]
+        pub fn matches(data: &[u8]) -> bool {
+            let data: &[u8; #len] = match data.get(..#len) {
+                Some(slice) => match <&[u8; #len]>::try_from(slice) {
+                    Ok(array) => array,
+                    Err(_) => return false,
+                },
+                None => return false,
+            };
+            let _ = data;
+            #(#tests)*
+            true
+        }
+    }
+}
+
+/// The module-level `Packet` enum and `decode`.
+fn dispatcher(layout: &Layout) -> TokenStream {
+    let borrows = layout.containers.iter().any(|container| container.borrows);
+    let lifetime = if borrows { quote!(<'a>) } else { quote!() };
+
+    let variants = layout.containers.iter().map(|container| {
+        let variant = ident(&container.type_ident);
+        let ty = ident(&container.type_ident);
+        let inner = if container.borrows {
+            quote!(#ty<'a>)
+        } else {
+            quote!(#ty)
+        };
+        let doc = format!("`{}`.", container.xtce_name);
+        quote! {
+            #[doc = #doc]
+            #variant(#inner)
+        }
+    });
+
+    let arms = layout.containers.iter().map(|container| {
+        let ty = ident(&container.type_ident);
+        quote! {
+            if #ty::matches(data) {
+                matched += 1;
+                selected = Some(Selected::#ty);
+            }
+        }
+    });
+    let selectors = layout.containers.iter().map(|container| {
+        let ty = ident(&container.type_ident);
+        quote!(#ty)
+    });
+    let decodes = layout.containers.iter().map(|container| {
+        let ty = ident(&container.type_ident);
+        quote! {
+            Selected::#ty => Ok(Packet::#ty(#ty::decode(data)?))
+        }
+    });
+
+    let data_type = if borrows {
+        quote!(&'a [u8])
+    } else {
+        quote!(&[u8])
+    };
+    let lifetime_in_signature = if borrows { quote!(<'a>) } else { quote!() };
+
+    quote! {
+        /// Any packet this module can decode.
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        pub enum Packet #lifetime {
+            #(#variants,)*
+        }
+
+        /// Chooses a container by its restriction criteria and decodes `data` as it.
+        ///
+        /// # Errors
+        ///
+        /// [`DecodeError::Unrecognized`] when no container's criteria hold, and
+        /// [`DecodeError::Ambiguous`] when more than one does — a definition that cannot
+        /// say which container a packet is, is a defect worth reporting rather than
+        /// resolving by declaration order.
+        pub fn decode #lifetime_in_signature (data: #data_type) -> Result<Packet #lifetime, DecodeError> {
+            #[derive(Clone, Copy)]
+            enum Selected {
+                #(#selectors,)*
+            }
+
+            let mut matched = 0usize;
+            let mut selected = None;
+            #(#arms)*
+
+            if matched > 1 {
+                return Err(DecodeError::Ambiguous);
+            }
+            match selected {
+                Some(selected) => match selected {
+                    #(#decodes,)*
+                },
+                None => Err(DecodeError::Unrecognized),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Shared definitions
+// ---------------------------------------------------------------------------------------
+
+fn helpers(layout: &Layout) -> TokenStream {
+    let mut needs = BTreeSet::new();
+    for container in &layout.containers {
+        for field in &container.fields {
+            match &field.kind {
+                Kind::Float16 => {
+                    needs.insert("half");
+                }
+                Kind::Text {
+                    delimiter: TextDelimiter::TerminationChar(_),
+                    ..
+                } => {
+                    needs.insert("find");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let half = if needs.contains("half") {
+        half_helpers()
+    } else {
+        quote!()
+    };
+    let find = if needs.contains("find") {
+        quote! {
+            /// The index of the first occurrence of `needle` in `haystack`.
+            ///
+            /// A plain scan, matching what the reference implementation does. `windows`
+            /// would panic on an empty needle, which cannot happen here: a definition with
+            /// an empty termination character is refused when the code is generated.
+            fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+                if needle.is_empty() || haystack.len() < needle.len() {
+                    return None;
+                }
+                let mut at = 0usize;
+                while at + needle.len() <= haystack.len() {
+                    match haystack.get(at..at + needle.len()) {
+                        Some(window) if window == needle => return Some(at),
+                        _ => {}
+                    }
+                    at += 1;
+                }
+                None
+            }
+        }
+    } else {
+        quote!()
+    };
+
+    let errors = errors();
+
+    quote! {
+        #errors
+        #half
+        #find
+    }
+}
+
+fn half_helpers() -> TokenStream {
+    quote! {
+        /// Widens IEEE-754 binary16 to `f32`, exactly.
+        ///
+        /// Public because a caller that has to build a binary16 value by hand — a test
+        /// fixture, a ground tool checking what the spacecraft will see — needs the same
+        /// conversion the generated code uses, not a second one that might differ.
+        ///
+        /// Every binary16 value is representable in `f32`, subnormals included, so this
+        /// loses nothing. A binary16 subnormal is a normal `f32`, which is why the
+        /// subnormal arm renormalises rather than shifting the fraction into place.
+        pub fn half_to_f32(bits: u16) -> f32 {
+            let sign = u32::from(bits & 0x8000) << 16;
+            let exponent = u32::from((bits >> 10) & 0x1F);
+            let fraction = u32::from(bits & 0x03FF);
+            match exponent {
+                0 if fraction == 0 => f32::from_bits(sign),
+                0 => {
+                    // `p = 31 - leading_zeros()` is the index of the highest set bit, so
+                    // the shift that moves it to bit 10 — the implicit-one position of the
+                    // ten-bit window — is `10 - p`, which is `leading_zeros() - 21`. The
+                    // mask then drops that implicit one.
+                    let shift = fraction.leading_zeros() - 21;
+                    let fraction = (fraction << shift) & 0x03FF;
+                    let exponent = 113 - shift;
+                    f32::from_bits(sign | (exponent << 23) | (fraction << 13))
+                }
+                0x1F => f32::from_bits(sign | 0x7F80_0000 | (fraction << 13)),
+                _ => f32::from_bits(sign | ((exponent + 127 - 15) << 23) | (fraction << 13)),
+            }
+        }
+
+        /// Narrows `f32` to IEEE-754 binary16, rounding to nearest and ties to even.
+        ///
+        /// Rounding, not rejection: a flight computer holding a temperature in `f32` should
+        /// be able to put it in a 16-bit field, and the definition already said how much
+        /// precision that field has. What the ground reads back is this rounded value.
+        pub fn f32_to_half(value: f32) -> u16 {
+            let bits = value.to_bits();
+            let sign = ((bits >> 16) & 0x8000) as u16;
+            let exponent = ((bits >> 23) & 0xFF) as i32;
+            let fraction = bits & 0x007F_FFFF;
+
+            if exponent == 0xFF {
+                // Infinity keeps its fraction of zero; a NaN has to stay a NaN, so a
+                // payload that would shift away entirely is replaced by a quiet one.
+                let payload = if fraction == 0 {
+                    0
+                } else {
+                    ((fraction >> 13) as u16) | 0x0200
+                };
+                return sign | 0x7C00 | payload;
+            }
+
+            let unbiased = exponent - 127;
+            if unbiased > 15 {
+                return sign | 0x7C00;
+            }
+            if unbiased < -24 {
+                return sign;
+            }
+            if unbiased < -14 {
+                // Subnormal in binary16: the implicit one becomes explicit and the whole
+                // significand shifts down.
+                let shift = (-14 - unbiased) as u32;
+                let significand = fraction | 0x0080_0000;
+                let total = 13 + shift;
+                let truncated = significand >> total;
+                let remainder = significand & ((1u32 << total) - 1);
+                let halfway = 1u32 << (total - 1);
+                let round =
+                    u32::from(remainder > halfway || (remainder == halfway && truncated & 1 == 1));
+                return sign | ((truncated + round) as u16);
+            }
+
+            let truncated = (((unbiased + 15) as u32) << 10) | (fraction >> 13);
+            let remainder = fraction & 0x1FFF;
+            let round =
+                u32::from(remainder > 0x1000 || (remainder == 0x1000 && truncated & 1 == 1));
+            // A carry out of the fraction lands in the exponent, and out of the exponent
+            // lands on infinity. Both are what rounding to nearest is supposed to do.
+            sign | ((truncated + round) as u16)
+        }
+    }
+}
+
+fn errors() -> TokenStream {
+    quote! {
+        /// Why a packet could not be encoded.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum EncodeError {
+            /// The buffer is smaller than the container needs.
+            TooShort {
+                /// Bytes the container needs.
+                needed: usize,
+            },
+            /// A value does not fit the bits the definition gives its parameter.
+            OutOfRange {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+            /// A string does not fit its field, or does not fill it.
+            TextLength {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+            /// A string contains the byte sequence that terminates it.
+            EmbeddedTerminator {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+            /// A string holds characters its declared character set cannot represent.
+            InvalidText {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+            /// A binary value is not exactly as wide as its field.
+            BinaryLength {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+        }
+
+        impl core::fmt::Display for EncodeError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self {
+                    Self::TooShort { needed } => {
+                        write!(f, "buffer is smaller than the {needed} byte(s) the container needs")
+                    }
+                    Self::OutOfRange { parameter } => {
+                        write!(f, "{parameter}: value does not fit the field")
+                    }
+                    Self::TextLength { parameter } => {
+                        write!(f, "{parameter}: string does not fit the field")
+                    }
+                    Self::EmbeddedTerminator { parameter } => {
+                        write!(f, "{parameter}: string contains its own terminator")
+                    }
+                    Self::InvalidText { parameter } => {
+                        write!(f, "{parameter}: characters outside the declared character set")
+                    }
+                    Self::BinaryLength { parameter } => {
+                        write!(f, "{parameter}: value is not exactly as wide as the field")
+                    }
+                }
+            }
+        }
+
+        impl core::error::Error for EncodeError {}
+
+        /// Why a packet could not be decoded.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum DecodeError {
+            /// The packet is shorter than the container it was read as.
+            TooShort {
+                /// Bytes the container needs.
+                needed: usize,
+            },
+            /// No container's restriction criteria hold.
+            Unrecognized,
+            /// More than one container's restriction criteria hold.
+            Ambiguous,
+            /// A field's bytes are not valid text.
+            InvalidText {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+            /// A terminated string has no terminator inside its buffer.
+            UnterminatedString {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+            /// A length-prefixed string declares a length its buffer cannot hold.
+            BadStringLength {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+            /// An enumerated field holds a value the definition has no label for.
+            UnknownLabel {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
+        }
+
+        impl core::fmt::Display for DecodeError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self {
+                    Self::TooShort { needed } => {
+                        write!(f, "packet is shorter than the {needed} byte(s) the container needs")
+                    }
+                    Self::Unrecognized => write!(f, "no container's restriction criteria hold"),
+                    Self::Ambiguous => {
+                        write!(f, "more than one container's restriction criteria hold")
+                    }
+                    Self::InvalidText { parameter } => {
+                        write!(f, "{parameter}: bytes are not valid text")
+                    }
+                    Self::UnterminatedString { parameter } => {
+                        write!(f, "{parameter}: termination character not found")
+                    }
+                    Self::BadStringLength { parameter } => {
+                        write!(f, "{parameter}: leading size is larger than the buffer")
+                    }
+                    Self::UnknownLabel { parameter } => {
+                        write!(f, "{parameter}: no label for this value")
+                    }
+                }
+            }
+        }
+
+        impl core::error::Error for DecodeError {}
+    }
+}
