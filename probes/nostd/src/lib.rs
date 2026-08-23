@@ -33,6 +33,11 @@ pub mod jpss {
     include!(concat!(env!("OUT_DIR"), "/jpss.rs"));
 }
 
+#[allow(dead_code, clippy::all, clippy::pedantic)]
+pub mod calibrated {
+    include!(concat!(env!("OUT_DIR"), "/calibrated.rs"));
+}
+
 /// Encodes a `NumericEdges` packet, exercising every numeric shape the emitter produces.
 #[inline(never)]
 pub fn encode_numeric_edges(out: &mut [u8]) -> usize {
@@ -133,4 +138,33 @@ pub fn dispatch_flight_shapes(data: &[u8]) -> bool {
 #[inline(never)]
 pub fn decode_jpss(data: &[u8]) -> bool {
     jpss::JpssAttEphem::decode(data).is_ok()
+}
+
+/// Applies every calibrator the definition declares.
+///
+/// Here for the panic check rather than for its own sake: a calibrator that is generated but
+/// never called does not reach the emitted LLVM IR, and the check would then pass on it
+/// without having looked at it. The arithmetic it exercises is the interesting part —
+/// `i128::checked_pow`, a fallback to `powi`, a division, and a binary search over `f64`.
+#[inline(never)]
+#[must_use]
+pub fn calibrate_all(data: &[u8]) -> f64 {
+    let Ok(packet) = calibrated::Telemetry::decode(data) else {
+        return f64::NAN;
+    };
+    let mut sum = 0.0;
+    for value in [
+        packet.poly_u32_calibrated(),
+        packet.poly_f64_calibrated(),
+        packet.poly_big_calibrated(),
+        packet.poly_s16_calibrated(),
+        packet.spl0_u8_calibrated(),
+        packet.spl1_u8_calibrated(),
+    ] {
+        match value {
+            Ok(value) => sum += value,
+            Err(_) => return f64::NAN,
+        }
+    }
+    sum
 }

@@ -21,6 +21,8 @@ use quote::{format_ident, quote};
 use xtce_codegen::plan::{TextCharset, TextDelimiter};
 use xtce_model::types::IntegerCoding;
 
+use xtce_codegen::Calibration;
+
 use crate::layout::{Container, EnumType, FlightField, Kind, Layout, mask_for, natural_bits};
 
 /// Renders the whole module.
@@ -205,6 +207,7 @@ fn container(container: &Container, enums: &[EnumType]) -> TokenStream {
     let encode = encode_body(container);
     let decode = decode_body(container, enums);
     let matches = matches_body(container);
+    let accessors = container.fields.iter().filter_map(calibrated_accessor);
 
     quote! {
         #[doc = #doc]
@@ -220,8 +223,96 @@ fn container(container: &Container, enums: &[EnumType]) -> TokenStream {
             #encode
             #decode
             #matches
+            #(#accessors)*
         }
     }
+}
+
+/// The accessor that applies a field's calibrator, for the fields that have one.
+///
+/// Deliberately not a struct field. Encoding is unaffected — a spacecraft has an ADC count,
+/// and turning counts into engineering units is the ground's job — so storing the result
+/// would cost bytes of RAM per packet on the part least able to spare them, to hold a number
+/// the flight side usually never looks at.
+///
+/// The arithmetic is `xtce-decode`'s, line for line, because that is what it is checked
+/// against. Terms are summed in document order: floating-point addition is not associative,
+/// so any other order is a different answer. An integral raw value is raised to its power
+/// exactly in `i128` and converted once; a float raw goes through `powi`, which rounds at
+/// every step. Those are different numbers, and the path follows the field's encoding.
+fn calibrated_accessor(field: &FlightField) -> Option<TokenStream> {
+    let calibration = field.calibration.as_ref()?;
+    let name = format_ident!("{}_calibrated", field.ident.trim_end_matches('_'));
+    let raw = {
+        let ident = ident(&field.ident);
+        quote!(self.#ident)
+    };
+    let xtce_name = &field.xtce_name;
+    let integral = matches!(field.kind, Kind::Unsigned | Kind::Signed(_));
+
+    let body = match calibration {
+        Calibration::Polynomial(terms) => {
+            let accumulate = terms.iter().map(|term| {
+                let coefficient = Literal::f64_unsuffixed(term.coefficient);
+                let exponent = Literal::i32_unsuffixed(term.exponent);
+                if integral {
+                    quote! { sum += #coefficient * integer_power(base, #exponent); }
+                } else {
+                    quote! { sum += #coefficient * powi(base, #exponent); }
+                }
+            });
+            let base = if integral {
+                quote! { let base = i128::from(#raw); }
+            } else {
+                quote! { let base = f64::from(#raw); }
+            };
+            quote! {
+                #base
+                let mut sum = 0.0f64;
+                #(#accumulate)*
+                Ok(sum)
+            }
+        }
+        Calibration::Spline(spline) => {
+            let points = spline.points.iter().map(|point| {
+                let raw = Literal::f64_unsuffixed(point.raw);
+                let calibrated = Literal::f64_unsuffixed(point.calibrated);
+                quote! { (#raw, #calibrated) }
+            });
+            let order = Literal::u8_unsuffixed(spline.order);
+            let extrapolate = spline.extrapolate;
+            let query = if integral {
+                quote! { i128::from(#raw) as f64 }
+            } else {
+                quote! { f64::from(#raw) }
+            };
+            quote! {
+                const POINTS: &[(f64, f64)] = &[#(#points),*];
+                match spline_value(POINTS, #order, #extrapolate, #query) {
+                    Some(value) => Ok(value),
+                    None => Err(DecodeError::Calibration { parameter: #xtce_name }),
+                }
+            }
+        }
+    };
+
+    let doc = format!(
+        " `{xtce_name}` in engineering units, by the calibrator the definition gives it.\n\n          The struct field holds the raw value the packet carries; this is what the ground \
+         reads. Encoding is unaffected — the calibrator is not inverted, because a \
+         spacecraft produces counts."
+    );
+
+    Some(quote! {
+        #[doc = #doc]
+        ///
+        /// # Errors
+        ///
+        /// [`DecodeError::Calibration`] if a spline is asked for a value outside its points
+        /// and the definition does not allow extrapolation. A polynomial never fails.
+        pub fn #name(&self) -> Result<f64, DecodeError> {
+            #body
+        }
+    })
 }
 
 /// The Rust type a field's value has in the struct.
@@ -1086,6 +1177,21 @@ fn helpers(layout: &Layout) -> TokenStream {
                 }
                 _ => {}
             }
+            match (&field.calibration, &field.kind) {
+                // The exact-power helper is only reachable from an integral encoding; a
+                // float raw uses `powi` inline.
+                (Some(Calibration::Polynomial(_)), Kind::Unsigned | Kind::Signed(_)) => {
+                    needs.insert("power");
+                    needs.insert("powi");
+                }
+                (Some(Calibration::Polynomial(_)), _) => {
+                    needs.insert("powi");
+                }
+                (Some(Calibration::Spline(_)), _) => {
+                    needs.insert("spline");
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1120,12 +1226,165 @@ fn helpers(layout: &Layout) -> TokenStream {
         quote!()
     };
 
+    let powi = if needs.contains("powi") {
+        powi_helper()
+    } else {
+        quote!()
+    };
+    let power = if needs.contains("power") {
+        integer_power_helper()
+    } else {
+        quote!()
+    };
+    let spline = if needs.contains("spline") {
+        spline_helpers()
+    } else {
+        quote!()
+    };
+
     let errors = errors();
 
     quote! {
         #errors
         #half
         #find
+        #powi
+        #power
+        #spline
+    }
+}
+
+/// `base^exponent` as `xtce-decode` computes it for an integral raw value.
+///
+/// Exactly, in `i128`, converted once — not by repeated multiplication, which rounds at every
+/// step. Panic-free: `checked_pow` returns `None` rather than overflowing, and there is no
+/// indexing.
+fn integer_power_helper() -> TokenStream {
+    quote! {
+        fn integer_power(base: i128, exponent: i32) -> f64 {
+            if exponent < 0 {
+                return powi(base as f64, exponent);
+            }
+            match u32::try_from(exponent)
+                .ok()
+                .and_then(|exponent| base.checked_pow(exponent))
+            {
+                Some(exact) => exact as f64,
+                None => powi(base as f64, exponent),
+            }
+        }
+    }
+}
+
+/// `f64::powi`, written out.
+///
+/// This is why the bare-metal probe exists. `powi` is in `std`, not `core`, so the first
+/// version of the calibration emitter produced code that ran the tests perfectly and would
+/// not build for a Cortex-M at all. The sequence below is the one `powi` performs — square
+/// and multiply, lowest bit first — so it is bit-identical to it, which matters because the
+/// interpreter this is checked against calls the real thing.
+fn powi_helper() -> TokenStream {
+    quote! {
+        fn powi(x: f64, exponent: i32) -> f64 {
+            // `unsigned_abs`, not negation: `-i32::MIN` overflows.
+            let mut remaining = exponent.unsigned_abs();
+            let mut result = 1.0f64;
+            let mut base = x;
+            let mut started = false;
+            while remaining > 0 {
+                if remaining & 1 == 1 {
+                    result = if started { result * base } else { base };
+                    started = true;
+                }
+                remaining >>= 1;
+                if remaining > 0 {
+                    base = base * base;
+                }
+            }
+            let value = if started { result } else { 1.0 };
+            if exponent < 0 { 1.0 / value } else { value }
+        }
+    }
+}
+
+/// Spline interpolation, line for line as `xtce-decode` does it.
+///
+/// Every lookup is `get`, so nothing here can panic; the order and the extrapolation flag are
+/// constants at every call site and fold away.
+fn spline_helpers() -> TokenStream {
+    quote! {
+        fn spline_line(x: f64, x0: f64, x1: f64, y0: f64, y1: f64) -> f64 {
+            if (x1 - x0) == 0.0 {
+                return y0;
+            }
+            let slope = (y1 - y0) / (x1 - x0);
+            slope * (x - x0) + y0
+        }
+
+        fn spline_value(
+            points: &[(f64, f64)],
+            order: u8,
+            extrapolate: bool,
+            query: f64,
+        ) -> Option<f64> {
+            let first = *points.first()?;
+            let last = *points.last()?;
+
+            if query < first.0 {
+                if !extrapolate {
+                    return None;
+                }
+                return Some(match order {
+                    0 => first.1,
+                    _ => match points.get(1) {
+                        Some(second) => {
+                            spline_line(query, first.0, second.0, first.1, second.1)
+                        }
+                        None => first.1,
+                    },
+                });
+            }
+
+            if query > last.0 {
+                if !extrapolate {
+                    return None;
+                }
+                return Some(match order {
+                    0 => last.1,
+                    _ => match points.len().checked_sub(2).and_then(|at| points.get(at)) {
+                        Some(previous) => {
+                            spline_line(query, previous.0, last.0, previous.1, last.1)
+                        }
+                        None => last.1,
+                    },
+                });
+            }
+
+            // The first point strictly above the query. A NaN query makes every comparison
+            // false, including both above, so it lands here at zero — which is what the
+            // floor is for.
+            let hi = points.partition_point(|point| point.0 <= query).max(1);
+
+            Some(match order {
+                0 => points
+                    .get(hi.saturating_sub(1))
+                    .map_or(first.1, |point| point.1),
+                _ => {
+                    if points.len() < 2 {
+                        return Some(first.1);
+                    }
+                    // A query equal to the last raw value has no point above it;
+                    // interpolating over the final segment lands exactly on it.
+                    let upper = hi.min(points.len() - 1);
+                    match (points.get(upper.saturating_sub(1)), points.get(upper)) {
+                        (Some(lower), Some(higher)) => {
+                            spline_line(query, lower.0, higher.0, lower.1, higher.1)
+                        }
+                        _ => first.1,
+                    }
+                }
+            })
+        }
     }
 }
 
@@ -1215,6 +1474,9 @@ fn half_helpers() -> TokenStream {
     }
 }
 
+// Two error enums and their `Display` impls. Splitting them apart would only mean two
+// functions that must be kept in step with each other.
+#[allow(clippy::too_many_lines)]
 fn errors() -> TokenStream {
     quote! {
         /// Why a packet could not be encoded.
@@ -1311,6 +1573,12 @@ fn errors() -> TokenStream {
                 /// The parameter, named as the definition spells it.
                 parameter: &'static str,
             },
+            /// A spline calibrator was asked for a value outside its points, and the
+            /// definition does not allow extrapolation.
+            Calibration {
+                /// The parameter, named as the definition spells it.
+                parameter: &'static str,
+            },
         }
 
         impl core::fmt::Display for DecodeError {
@@ -1335,6 +1603,11 @@ fn errors() -> TokenStream {
                     Self::UnknownLabel { parameter } => {
                         write!(f, "{parameter}: no label for this value")
                     }
+                    Self::Calibration { parameter } => write!(
+                        f,
+                        "{parameter}: query point falls outside the spline points and \
+                         extrapolate is false"
+                    ),
                 }
             }
         }

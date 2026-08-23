@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  One field, one spline, and no extrapolation. Its points cover 50 to 200 of a byte, so most
+  of the field's range has no answer at all.
+
+  It is a separate file from `calibrated.xml` on purpose. A calibrator that refuses is the
+  one thing on the decode side that can fail for a packet that is otherwise perfectly well
+  formed, and mixing it into the definition the differential loop drives with random values
+  would mean half the loop's packets never reaching the comparison. Here the refusal can be
+  driven deliberately, on both sides of every boundary.
+-->
+<SpaceSystem xmlns="http://www.omg.org/spec/XTCE/20180204" name="CalibratedBounded">
+  <TelemetryMetaData>
+    <ParameterTypeSet>
+      <IntegerParameterType name="BOUNDED_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned">
+          <DefaultCalibrator>
+            <SplineCalibrator order="1" extrapolate="false">
+              <SplinePoint raw="50" calibrated="0.0"/>
+              <SplinePoint raw="120" calibrated="25.5"/>
+              <SplinePoint raw="200" calibrated="85.25"/>
+            </SplineCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+
+    <ParameterSet>
+      <Parameter name="BOUNDED" parameterTypeRef="BOUNDED_T"/>
+    </ParameterSet>
+
+    <ContainerSet>
+      <SequenceContainer name="Bounded">
+        <EntryList>
+          <ParameterRefEntry parameterRef="BOUNDED"/>
+        </EntryList>
+      </SequenceContainer>
+    </ContainerSet>
+  </TelemetryMetaData>
+</SpaceSystem>

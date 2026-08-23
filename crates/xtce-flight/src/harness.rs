@@ -83,6 +83,13 @@ fn prelude() -> TokenStream {
             /// `(parameter, raw value, mask)` for every restriction criterion, which the
             /// encoder wrote rather than the caller.
             pub criteria: Vec<(&'static str, u64, u64)>,
+            /// `(parameter, raw value, engineering value)` for every calibrated field.
+            ///
+            /// These are not in `expected`, because for a calibrated parameter the value
+            /// that went in is the *raw* one and the value the ground reads is not. The
+            /// engineering value is `None` when the accessor refused it — a spline asked
+            /// outside its points — in which case the interpreter has to refuse too.
+            pub calibrated: Vec<(&'static str, u64, Option<f64>)>,
         }
 
         /// A value as it went into the encoder.
@@ -274,22 +281,47 @@ fn case(container: &Container, enums: &[EnumType], path: &TokenStream) -> TokenS
         }
     });
 
-    // What the interpreter should report, keyed by the name the definition uses.
-    let expectations = container.fields.iter().map(|field| {
-        let binding = format_ident!("{}", field.ident);
-        let xtce = &field.xtce_name;
-        let expected = match &field.kind {
-            Kind::Unsigned => quote!(Expected::Unsigned(u64::from(#binding))),
-            Kind::Signed(_) => quote!(Expected::Signed(i64::from(#binding))),
-            Kind::Float16 | Kind::Float32 => quote!(Expected::Float(f64::from(#binding))),
-            Kind::Float64 => quote!(Expected::Float(#binding)),
-            Kind::Bool => quote!(Expected::Bool(#binding)),
-            Kind::Enumerated(_) => quote!(Expected::Label(#binding.label())),
-            Kind::Text { .. } => quote!(Expected::Text(#binding.clone())),
-            Kind::Binary => quote!(Expected::Bytes(#binding.clone())),
-        };
-        quote! { (#xtce, #expected) }
-    });
+    // What the interpreter should report, keyed by the name the definition uses. A
+    // calibrated field is excluded and handled below: what went in was a raw count, and what
+    // comes back is what the calibrator makes of it.
+    let expectations = container
+        .fields
+        .iter()
+        .filter(|field| field.calibration.is_none())
+        .map(|field| {
+            let binding = format_ident!("{}", field.ident);
+            let xtce = &field.xtce_name;
+            let expected = match &field.kind {
+                Kind::Unsigned => quote!(Expected::Unsigned(u64::from(#binding))),
+                Kind::Signed(_) => quote!(Expected::Signed(i64::from(#binding))),
+                Kind::Float16 | Kind::Float32 => quote!(Expected::Float(f64::from(#binding))),
+                Kind::Float64 => quote!(Expected::Float(#binding)),
+                Kind::Bool => quote!(Expected::Bool(#binding)),
+                Kind::Enumerated(_) => quote!(Expected::Label(#binding.label())),
+                Kind::Text { .. } => quote!(Expected::Text(#binding.clone())),
+                Kind::Binary => quote!(Expected::Bytes(#binding.clone())),
+            };
+            quote! { (#xtce, #expected) }
+        });
+
+    let calibrated = container
+        .fields
+        .iter()
+        .filter(|field| field.calibration.is_some())
+        .map(|field| {
+            let binding = format_ident!("{}", field.ident);
+            let accessor = format_ident!("{}_calibrated", field.ident.trim_end_matches('_'));
+            let xtce = &field.xtce_name;
+            // The same reduction to `u64` the interpreter's raw value gets on the other
+            // side, so the two are comparable without a second value enum.
+            let raw = match &field.kind {
+                Kind::Signed(_) => quote!(#binding as i64 as u64),
+                Kind::Float16 | Kind::Float32 => quote!(f64::from(#binding).to_bits()),
+                Kind::Float64 => quote!(#binding.to_bits()),
+                _ => quote!(u64::from(#binding)),
+            };
+            quote! { (#xtce, #raw, packet.#accessor().ok()) }
+        });
 
     let criteria = container.constants.iter().map(|constant| {
         let xtce = &constant.xtce_name;
@@ -333,6 +365,7 @@ fn case(container: &Container, enums: &[EnumType], path: &TokenStream) -> TokenS
                 bytes,
                 expected: vec![#(#expectations),*],
                 criteria: vec![#(#criteria),*],
+                calibrated: vec![#(#calibrated),*],
             }
         }
     }

@@ -39,6 +39,8 @@ macro_rules! case {
 case!(numeric_edges, "numeric_edges");
 case!(flight_shapes, "flight_shapes");
 case!(jpss, "jpss");
+case!(calibrated, "calibrated");
+case!(calibrated_bounded, "calibrated_bounded");
 
 fn testdata(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -143,6 +145,7 @@ macro_rules! check {
                     .iter()
                     .map(|(parameter, _)| *parameter)
                     .chain(case.criteria.iter().map(|(parameter, _, _)| *parameter))
+                    .chain(case.calibrated.iter().map(|(parameter, _, _)| *parameter))
                     .collect();
                 claimed.sort_unstable();
                 let mut reported: Vec<&str> = seen.keys().map(String::as_str).collect();
@@ -184,6 +187,41 @@ macro_rules! check {
                         same,
                         "{label}: {parameter}: encoded {expected:?}, interpreter read {actual:?}"
                     );
+                    checked += 1;
+                }
+
+                // A calibrated parameter has two values, and they are checked against
+                // different halves of what the interpreter reports: the raw one against what
+                // was encoded, and the engineering one against the interpreter's own
+                // calibration — an implementation this generator shares no code with.
+                for (parameter, raw, engineering) in &case.calibrated {
+                    let (actual, actual_raw) = seen.get(*parameter).unwrap_or_else(|| {
+                        panic!("{label}: the interpreter did not report {parameter}")
+                    });
+                    assert_eq!(
+                        actual_raw, raw,
+                        "{label}: {parameter}: the raw value was not encoded correctly"
+                    );
+                    let engineering = engineering.unwrap_or_else(|| {
+                        panic!(
+                            "{label}: {parameter}: the calibrator refused a value the \
+                             interpreter accepted"
+                        )
+                    });
+                    match actual {
+                        // By bit pattern. A calibrated value that is right to fourteen
+                        // digits and wrong in the last bit is the failure worth catching.
+                        Seen::Float(interpreted) => assert_eq!(
+                            engineering.to_bits(),
+                            interpreted.to_bits(),
+                            "{label}: {parameter}: calibrated to {engineering}, interpreter \
+                             read {interpreted}"
+                        ),
+                        other => panic!(
+                            "{label}: {parameter}: a calibrated field should read as a \
+                             float, not {other:?}"
+                        ),
+                    }
                     checked += 1;
                 }
             }
@@ -486,4 +524,126 @@ fn binary16_narrowing_rounds_to_nearest_even() {
     // Below the smallest subnormal, it flushes to a signed zero.
     assert_eq!(f32_to_half(1e-30), 0x0000);
     assert_eq!(f32_to_half(-1e-30), 0x8000);
+}
+
+/// Calibration, against the interpreter, over seeded packets.
+///
+/// Encoding is untouched by a calibrator — a spacecraft has an ADC count, and turning counts
+/// into engineering units is the ground's job — so what is under test here is the accessor,
+/// against `xtce-decode`'s own calibration. Two implementations sharing no code, the same
+/// input bits, compared on `to_bits()`.
+#[test]
+fn calibration_matches_the_interpreter_bit_for_bit() {
+    let checked = check!(calibrated, "calibrated.xml", None::<&str>, 256u64);
+    assert!(checked > 1_500, "only {checked} field(s) compared");
+}
+
+/// The integral and floating-point power paths are not interchangeable.
+///
+/// `calibrated.xml` gives `POLY_U32` and `POLY_F64` byte-for-byte identical terms over
+/// different encodings. Fed the same number they must still disagree in the last bit: an
+/// integral raw value is cubed exactly and rounded once, a float raw by repeated squaring,
+/// which rounds twice.
+///
+/// The test above would not catch a generator that collapsed them, because it never feeds
+/// the two fields the same number — each is compared against the interpreter separately, and
+/// the interpreter would be wrong in the same way only if it had the same bug.
+#[test]
+fn the_integer_power_path_is_not_the_float_one() {
+    use calibrated::flight::Telemetry;
+
+    // 2^27 + 1. Its cube needs 82 bits, so rounding it once is not the same as rounding the
+    // square and then the product.
+    const VALUE: u32 = (1 << 27) + 1;
+
+    let mut packet = vec![0u8; Telemetry::LEN];
+    packet[0..4].copy_from_slice(&VALUE.to_be_bytes());
+    packet[4..12].copy_from_slice(&f64::from(VALUE).to_bits().to_be_bytes());
+
+    let decoded = Telemetry::decode(&packet).expect("the packet decodes");
+    let integral = decoded
+        .poly_u32_calibrated()
+        .expect("a polynomial never fails");
+    let floating = decoded
+        .poly_f64_calibrated()
+        .expect("a polynomial never fails");
+
+    assert_ne!(
+        integral.to_bits(),
+        floating.to_bits(),
+        "the same value through the integral and floating-point paths came out identical, \
+         so the emitter is using one path for both"
+    );
+    // A last-bit disagreement, not a wrong answer.
+    assert!(
+        (integral - floating).abs() / integral.abs() < 1e-15,
+        "the two paths differ by more than rounding: {integral} against {floating}"
+    );
+}
+
+/// A spline that may not extrapolate refuses, rather than inventing a value.
+///
+/// Driven deliberately rather than through the loop above: this is the only thing on the
+/// decode side that can fail for a packet that is otherwise perfectly well formed, and it has
+/// to fail on exactly the values the interpreter fails on — not one either side.
+#[test]
+fn a_bounded_spline_refuses_outside_its_points() {
+    use calibrated_bounded::flight::{Bounded, DecodeError};
+
+    let db = XtceDb::from_path(testdata("calibrated_bounded.xml")).expect("definition loads");
+    let decoder = Decoder::new(&db).expect("root container");
+
+    let mut refused = 0usize;
+    let mut answered = 0usize;
+
+    for raw in 0..=u8::MAX {
+        let packet = [raw];
+        let decoded = Bounded::decode(&packet).expect("one byte always decodes");
+        let generated = decoded.bounded_calibrated();
+
+        let mut interpreted = decoder.new_packet(&packet);
+        let by_interpreter = decoder.decode_into(&mut interpreted, &packet);
+
+        match (&generated, by_interpreter) {
+            (Err(_), Err(_)) => {
+                refused += 1;
+                assert!(
+                    !(50..=200).contains(&raw),
+                    "raw {raw} is inside the spline's points but was refused"
+                );
+                assert_eq!(
+                    generated,
+                    Err(DecodeError::Calibration {
+                        parameter: "BOUNDED"
+                    })
+                );
+            }
+            (Ok(value), Ok(())) => {
+                answered += 1;
+                assert!(
+                    (50..=200).contains(&raw),
+                    "raw {raw} is outside the spline's points but got an answer"
+                );
+                let (_, seen) = interpret(&db, &decoder, &packet);
+                let (interpreted_value, _) =
+                    seen.get("BOUNDED").expect("the interpreter reports it");
+                match interpreted_value {
+                    Seen::Float(expected) => assert_eq!(
+                        value.to_bits(),
+                        expected.to_bits(),
+                        "raw {raw}: calibrated to {value}, interpreter read {expected}"
+                    ),
+                    other => panic!("raw {raw}: interpreter read {other:?}"),
+                }
+            }
+            (generated, interpreted_result) => panic!(
+                "raw {raw}: the two implementations disagree about whether it calibrates — \
+                 generated {generated:?}, interpreter {interpreted_result:?}"
+            ),
+        }
+    }
+
+    // 50 to 200 inclusive is 151 of the 256 values, and the rest have no answer.
+    assert_eq!(answered, 151);
+    assert_eq!(refused, 105);
 }

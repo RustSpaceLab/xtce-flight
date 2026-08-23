@@ -61,10 +61,10 @@ check folds away. The script then reads the IR and fails if any reference to the
 machinery survived. It also fails if the probe's own functions are *absent* from the IR, so
 it cannot pass by having optimised away the code it is meant to inspect.
 
-Current result, on the three bundled definitions:
+Current result, on the four definitions the probe compiles:
 
 ```
-no panic path in 5020 lines of IR for thumbv7em-none-eabihf
+no panic path in 6118 lines of IR for thumbv7em-none-eabihf
 ```
 
 ## How correctness is argued
@@ -80,6 +80,10 @@ xtce-flight encodes  →  xtce-decode decodes  →  compare against the values t
                              ↑
                         already equal to space_packet_parser
 ```
+
+For a calibrated field the two halves are checked separately: the raw value against what was
+encoded, and `x_calibrated()` against the interpreter's own calibration — an implementation
+this one shares no code with.
 
 The values are invented by a harness that is itself generated from the same layout — one
 `struct` per container means a hand-written filler cannot be reused, and a hand-written one
@@ -111,11 +115,45 @@ than one that stops, because the gap only shows up in flight.
 | Fixed-size text: whole-buffer, terminated, length-prefixed | Yes |
 | Fixed-size binary | Yes |
 | Container inheritance and equality restriction criteria | Yes |
+| `DefaultCalibrator`: polynomial and spline | Yes — on the decode side, as an accessor |
+| `ContextCalibrator`, splines above first order | Refused |
 | A width that comes from the packet | Refused — it has no fixed place in a `struct` |
 | An inequality restriction criterion | Refused — it names a set, and an encoder writes one value |
 | A float that is not 16, 32 or 64 bits | Refused — there is no such IEEE-754 format |
 | Text or binary off a byte boundary | Refused — it is written as a slice |
-| Calibrators, little-endian fields, arrays | Not yet |
+| Little-endian fields, arrays | Not yet |
+
+### Calibration does not touch encoding
+
+A calibrator turns an ADC count into a temperature. A spacecraft has the count; the
+conversion is the ground's job, and XTCE says how. So `encode` is byte-identical whether a
+field is calibrated or not, no calibrator is inverted, and no struct field changes type.
+
+What is added is one accessor per calibrated field:
+
+```rust
+let raw = packet.temp;                     // what the sensor gave you
+let celsius = packet.temp_calibrated()?;   // what the ground will read
+```
+
+It is a method rather than a stored field on purpose: storing it would cost eight bytes of
+RAM per calibrated parameter on the part least able to spare them, to hold a number the
+flight side usually never looks at.
+
+The arithmetic is `xtce-decode`'s, line for line, and checked against it on `to_bits()`.
+That is not pedantry. Floating-point addition is neither associative nor commutative, so
+summing a polynomial by Horner's method — or sorted by exponent, or in any order but the
+document's — gives an answer right to fourteen digits and wrong in the last bit. Worse: an
+*integral* raw value is raised to its power exactly and rounded once, while a *float* raw
+goes through repeated squaring, which rounds at every step. Those are different numbers, and
+`testdata/calibrated.xml` carries identical polynomial terms over both encodings so that a
+generator collapsing them into one routine fails a test rather than a mission.
+
+This is also where the bare-metal probe earned its keep: `f64::powi` is in `std`, not `core`,
+so the first version of the calibration emitter passed every test and would not build for a
+Cortex-M at all. The generated code now writes out the same square-and-multiply sequence
+`powi` performs — verified bit-identical over four million comparisons, and pinned by the
+differential test.
 
 ### Three choices worth knowing about
 
@@ -137,14 +175,14 @@ no mission definition in reach has a 16-bit float at all.
 ## Testing
 
 ```console
-$ cargo test --workspace                        # 20 tests, no Python needed
+$ cargo test --workspace                        # 23 tests, no Python needed
 $ ./scripts/check-no-panic.sh                   # the bare-metal gate
 ```
 
 | Command | Proves |
 |---|---|
 | `cargo test -p xtce-flight` | what the layout decides, and what it refuses, on inline XTCE |
-| `cargo test -p xtce-flight-e2e` | the generated encoder against `xtce-decode`, 256 seeded packets per container |
+| `cargo test -p xtce-flight-e2e` | the generated encoder and calibration against `xtce-decode`, 256 seeded packets per container |
 | `./scripts/check-no-panic.sh` | `no_std`, no `unsafe`, no panic path, for Cortex-M4F |
 
 Neither the flight code nor the harness is committed: `build.rs` writes both. That is the
@@ -158,13 +196,16 @@ tested without putting them in the repository.
 | `testdata/jpss1_geolocation_xtce_v1.xml` | a real mission definition — JPSS-1 attitude and ephemeris, three criteria deep |
 | `testdata/numeric_edges.xml` | purpose-built: every numeric shape, aligned and four bits off a boundary, including the 64-bit float that spans nine bytes |
 | `testdata/flight_shapes.xml` | purpose-built: inheritance, enumerations whose labels are not Rust identifiers, and all three ways XTCE delimits a string |
+| `testdata/calibrated.xml` | purpose-built: polynomials over both an integer and a float encoding, a negative exponent, and splines of both orders |
+| `testdata/calibrated_bounded.xml` | purpose-built: one spline that may not extrapolate, so the refusal can be driven on both sides of every boundary |
 
-Two of the three are written rather than found, and deliberately so. Mission files are the
+Four of the five are written rather than found, and deliberately so. Mission files are the
 right thing to validate against, but between them they reach almost none of an encoder's
 edges: no label that needs sanitising, no terminated string, no float at an offset that makes
-it span an extra byte. The first version of the binary16 widening in this repository was
-wrong for every subnormal with more than one bit set in its fraction, and only the
-purpose-built file found it.
+it span an extra byte, and **no calibrator anywhere at all**. Two bugs in this repository
+were found only by a purpose-built file: the binary16 widening was wrong for every subnormal
+with more than one bit set in its fraction, and the calibration emitter used a `std`
+function in code that has to build for a bare-metal target.
 
 `jpss1_geolocation_xtce_v1.xml` is vendored from
 [`lasp/space_packet_parser`](https://github.com/lasp/space_packet_parser) under BSD 3-Clause;

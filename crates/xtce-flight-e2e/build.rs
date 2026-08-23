@@ -13,6 +13,9 @@ const CASES: &[(&str, &str, Option<&str>)] = &[
     // Purpose-built. Inheritance and restriction criteria, enumerations whose labels are
     // not Rust identifiers, and all three ways XTCE delimits a string.
     ("flight_shapes", "flight_shapes.xml", None),
+    // Purpose-built. Calibrators, which no mission definition in reach has at all.
+    ("calibrated", "calibrated.xml", None),
+    ("calibrated_bounded", "calibrated_bounded.xml", None),
     // A real mission definition: JPSS-1 attitude and ephemeris, three criteria deep.
     // Rooted at CCSDSPacket, not the telemetry sub-container: the criteria that select
     // JPSS_ATT_EPHEM test fields the primary header declares, and a plan that starts below

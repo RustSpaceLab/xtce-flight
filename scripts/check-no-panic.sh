@@ -44,7 +44,7 @@ ir="$(find "${deps}" -name '*.ll' -print -quit)"
 
 # The probe's own entry points have to be in there, or the optimiser removed the very code
 # this is meant to inspect and a clean result would mean nothing.
-for symbol in encode_numeric_edges encode_status_report encode_beacon decode_jpss; do
+for symbol in encode_numeric_edges encode_status_report encode_beacon decode_jpss calibrate_all; do
     if ! grep -q "${symbol}" "${ir}"; then
         echo "${symbol} is not in the emitted IR; the check would pass vacuously" >&2
         exit 1

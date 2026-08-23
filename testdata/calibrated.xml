@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Written for this project. No mission definition in reach has a calibrator at all, so
+  without this the whole calibration path would be generated and never compared against
+  anything.
+
+  Calibration changes nothing about *encoding*: a spacecraft has an ADC count, and turning
+  counts into engineering units is the ground's job. What it adds is a decode-side accessor,
+  and the accessor is where a generator most easily produces an answer that is right to
+  fourteen digits and wrong in the last bit.
+
+  POLY_U32 and POLY_F64 carry byte-for-byte identical terms over different encodings. That is
+  the point of them. The reference raises an integral raw value to its power exactly and
+  rounds once; a float raw goes through repeated squaring, which rounds at every step. For
+  roughly a quarter of 32-bit values the two answers differ, so a generator that picks the
+  path by convenience rather than by the field's encoding is caught here and nowhere else.
+
+  POLY_BIG's fourth power overflows an i128 above about 3.6 thousand million, where the exact
+  route has to give up and fall back to floating point. Random 32-bit values land on both
+  sides of that line. It is a separate parameter because a fourth-power term is large enough
+  to swallow the difference the cubed one exists to expose.
+
+  POLY_S16 lists its terms out of exponent order — document order is the summation order —
+  and has a negative exponent, which for a raw of zero is an infinity that then has to
+  propagate through the sum identically in both implementations.
+
+  Both splines extrapolate, so every value of a byte has an answer and the differential loop
+  never has to reason about a refusal. The refusing case lives in `calibrated_bounded.xml`,
+  where it can be driven deliberately.
+-->
+<SpaceSystem xmlns="http://www.omg.org/spec/XTCE/20180204" name="Calibrated">
+  <TelemetryMetaData>
+    <ParameterTypeSet>
+      <IntegerParameterType name="POLY_MIXED_T">
+        <IntegerDataEncoding sizeInBits="32" encoding="unsigned">
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="1.0" exponent="3"/>
+              <Term coefficient="-0.5" exponent="1"/>
+              <Term coefficient="12.25" exponent="0"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <FloatParameterType name="POLY_MIXED_F64_T">
+        <FloatDataEncoding sizeInBits="64" encoding="IEEE754">
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="1.0" exponent="3"/>
+              <Term coefficient="-0.5" exponent="1"/>
+              <Term coefficient="12.25" exponent="0"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </FloatDataEncoding>
+      </FloatParameterType>
+
+      <IntegerParameterType name="POLY_BIG_T">
+        <IntegerDataEncoding sizeInBits="32" encoding="unsigned">
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="1.0" exponent="4"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <IntegerParameterType name="POLY_NEG_T">
+        <IntegerDataEncoding sizeInBits="16" encoding="twosComplement">
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="2.0" exponent="1"/>
+              <Term coefficient="100.0" exponent="-1"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <IntegerParameterType name="SPL0_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned">
+          <DefaultCalibrator>
+            <SplineCalibrator order="0" extrapolate="true">
+              <SplinePoint raw="10" calibrated="-40.0"/>
+              <SplinePoint raw="50" calibrated="0.0"/>
+              <SplinePoint raw="120" calibrated="25.5"/>
+              <SplinePoint raw="200" calibrated="85.25"/>
+            </SplineCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <IntegerParameterType name="SPL1_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned">
+          <DefaultCalibrator>
+            <SplineCalibrator order="1" extrapolate="true">
+              <SplinePoint raw="10" calibrated="-40.0"/>
+              <SplinePoint raw="50" calibrated="0.0"/>
+              <SplinePoint raw="120" calibrated="25.5"/>
+              <SplinePoint raw="200" calibrated="85.25"/>
+            </SplineCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <!-- The control: without an uncalibrated field next to them, a generator that
+           calibrated everything would look the same as one that calibrated nothing. -->
+      <IntegerParameterType name="PLAIN_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+
+    <ParameterSet>
+      <Parameter name="POLY_U32" parameterTypeRef="POLY_MIXED_T"/>
+      <Parameter name="POLY_F64" parameterTypeRef="POLY_MIXED_F64_T"/>
+      <Parameter name="POLY_BIG" parameterTypeRef="POLY_BIG_T"/>
+      <Parameter name="POLY_S16" parameterTypeRef="POLY_NEG_T"/>
+      <Parameter name="SPL0_U8" parameterTypeRef="SPL0_T"/>
+      <Parameter name="SPL1_U8" parameterTypeRef="SPL1_T"/>
+      <Parameter name="PLAIN_U8" parameterTypeRef="PLAIN_T"/>
+    </ParameterSet>
+
+    <ContainerSet>
+      <SequenceContainer name="Telemetry">
+        <EntryList>
+          <ParameterRefEntry parameterRef="POLY_U32"/>
+          <ParameterRefEntry parameterRef="POLY_F64"/>
+          <ParameterRefEntry parameterRef="POLY_BIG"/>
+          <ParameterRefEntry parameterRef="POLY_S16"/>
+          <ParameterRefEntry parameterRef="SPL0_U8"/>
+          <ParameterRefEntry parameterRef="SPL1_U8"/>
+          <ParameterRefEntry parameterRef="PLAIN_U8"/>
+        </EntryList>
+      </SequenceContainer>
+    </ContainerSet>
+  </TelemetryMetaData>
+</SpaceSystem>

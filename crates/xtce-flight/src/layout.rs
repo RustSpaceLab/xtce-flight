@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use xtce_codegen::plan::{TextCharset, TextDelimiter};
-use xtce_codegen::{ContainerPlan, Field, Guard, Node, Plan, Repr};
+use xtce_codegen::{Calibration, ContainerPlan, Field, Guard, Node, Plan, Repr};
 use xtce_model::CompareOp;
 use xtce_model::types::IntegerCoding;
 
@@ -63,6 +63,13 @@ pub struct FlightField {
     pub bit_width: u32,
     /// What the caller supplies and how it becomes bits.
     pub kind: Kind,
+    /// The calibrator the ground will apply to this field, if any.
+    ///
+    /// It changes nothing about encoding. A spacecraft has an ADC count, not a temperature;
+    /// turning counts into engineering units is what the calibrator is *for*, and it is the
+    /// ground's job. What it adds here is a decode-side accessor, so a flight computer
+    /// reading a telecommand — or a test — can apply the same conversion the ground will.
+    pub calibration: Option<Calibration>,
 }
 
 /// A restriction criterion, as bits the encoder writes.
@@ -363,6 +370,7 @@ impl Builder {
             bit_offset,
             bit_width,
             kind,
+            calibration: field.calibration.clone(),
         })
     }
 
