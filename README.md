@@ -61,10 +61,10 @@ check folds away. The script then reads the IR and fails if any reference to the
 machinery survived. It also fails if the probe's own functions are *absent* from the IR, so
 it cannot pass by having optimised away the code it is meant to inspect.
 
-Current result, on the five definitions the probe compiles:
+Current result, on the six definitions the probe compiles:
 
 ```
-no panic path in 7217 lines of IR for thumbv7em-none-eabihf
+no panic path in 8211 lines of IR for thumbv7em-none-eabihf
 ```
 
 ## How correctness is argued
@@ -116,6 +116,7 @@ than one that stops, because the gap only shows up in flight.
 | Fixed-size binary | Yes |
 | Container inheritance and equality restriction criteria | Yes |
 | `BooleanExpression`: a conjunction of `Condition`s | Yes — it is a conjunction of equalities however the XML spells it |
+| `ArrayParameterType`, `ArrayParameterRefEntry` | Yes — one struct field per element, `temps_0`…, expanded before this generator runs |
 | `ORedConditions` | Refused — a disjunction is not a packet an encoder can write |
 | `leastSignificantByteFirst`, whole-byte widths | Yes — including a criterion, inverted when the code is generated |
 | `leastSignificantByteFirst`, other widths | Refused — reversing a value narrower than its byte count has no inverse |
@@ -125,7 +126,7 @@ than one that stops, because the gap only shows up in flight.
 | An inequality restriction criterion | Refused — it names a set, and an encoder writes one value |
 | A float that is not 16, 32 or 64 bits | Refused — there is no such IEEE-754 format |
 | Text or binary off a byte boundary | Refused — it is written as a slice |
-| Arrays, aggregates | Not yet |
+| Aggregates | Not yet |
 
 ### Byte order is an operation to invert, not to apply
 
@@ -193,7 +194,7 @@ no mission definition in reach has a 16-bit float at all.
 ## Testing
 
 ```console
-$ cargo test --workspace                        # 29 tests, no Python needed
+$ cargo test --workspace                        # 30 tests, no Python needed
 $ ./scripts/check-no-panic.sh                   # the bare-metal gate
 ```
 
@@ -218,8 +219,9 @@ tested without putting them in the repository.
 | `testdata/calibrated_bounded.xml` | purpose-built: one spline that may not extrapolate, so the refusal can be driven on both sides of every boundary |
 | `testdata/contrived_inheritance_structure.xml` | a real mission definition whose container is selected by a `<BooleanExpression>` rather than a `<ComparisonList>` |
 | `testdata/byte_order.xml` | purpose-built: little-endian fields of every whole-byte width, aligned and not, and a little-endian criterion |
+| `testdata/arrays.xml` | purpose-built: arrays of one and two dimensions, a subset of one, and six four-bit elements that keep everything after them off a byte boundary |
 
-Five of the seven are written rather than found, and deliberately so. Mission files are the
+Six of the eight are written rather than found, and deliberately so. Mission files are the
 right thing to validate against, but between them they reach almost none of an encoder's
 edges: no label that needs sanitising, no terminated string, no float at an offset that makes
 it span an extra byte, and **no calibrator anywhere at all**. Two bugs in this repository

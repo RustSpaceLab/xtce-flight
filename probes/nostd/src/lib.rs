@@ -43,6 +43,11 @@ pub mod byte_order {
     include!(concat!(env!("OUT_DIR"), "/byte_order.rs"));
 }
 
+#[allow(dead_code, clippy::all, clippy::pedantic)]
+pub mod arrays {
+    include!(concat!(env!("OUT_DIR"), "/arrays.rs"));
+}
+
 /// Encodes a `NumericEdges` packet, exercising every numeric shape the emitter produces.
 #[inline(never)]
 pub fn encode_numeric_edges(out: &mut [u8]) -> usize {
@@ -203,6 +208,52 @@ pub fn round_trip_little_endian(out: &mut [u8]) -> bool {
         return false;
     }
     match byte_order::Telemetry::decode(out) {
+        Ok(returned) => returned == packet,
+        Err(_) => false,
+    }
+}
+
+/// Encodes and decodes a packet of arrays.
+///
+/// Twenty-seven fields, six of them four bits wide, none of which the encoder knows came from
+/// an array. Here for the panic check: an expansion that produced an out-of-range index would
+/// put a bounds check in the emitted code, and this is what makes the gate look at it.
+#[inline(never)]
+#[must_use]
+pub fn round_trip_arrays(out: &mut [u8]) -> bool {
+    let packet = arrays::Telemetry {
+        lead: 1,
+        temps_0: -1,
+        temps_1: -2,
+        temps_2: -3,
+        temps_3: 4,
+        temps_4: 5,
+        temps_5: 6,
+        middle: 2,
+        grid_0_0: 10,
+        grid_0_1: 11,
+        grid_0_2: 12,
+        grid_1_0: 13,
+        grid_1_1: 14,
+        grid_1_2: 15,
+        window_3: 20,
+        window_4: 21,
+        window_5: 22,
+        bits_0: 1,
+        bits_1: 2,
+        bits_2: 3,
+        bits_3: 4,
+        bits_4: 5,
+        bits_5: 6,
+        floats_0: 1.5,
+        floats_1: 2.5,
+        floats_2: 3.5,
+        tail: 9,
+    };
+    if packet.encode(out).is_err() {
+        return false;
+    }
+    match arrays::Telemetry::decode(out) {
         Ok(returned) => returned == packet,
         Err(_) => false,
     }

@@ -43,6 +43,7 @@ case!(calibrated, "calibrated");
 case!(calibrated_bounded, "calibrated_bounded");
 case!(contrived, "contrived");
 case!(byte_order, "byte_order");
+case!(arrays, "arrays");
 
 fn testdata(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -680,4 +681,21 @@ fn a_container_selected_by_conditions_round_trips() {
 fn little_endian_fields_survive_the_interpreter() {
     let checked = check!(byte_order, "byte_order.xml", None::<&str>, 256u64);
     assert!(checked > 3_000, "only {checked} field(s) compared");
+}
+
+/// Arrays survive the round trip, and needed nothing of the encoder.
+///
+/// An array entry is expanded into one parameter per element when the definition loads, so by
+/// the time this generator runs there are no arrays — only twenty-seven fields with names
+/// like `TEMPS[3]`. That is the claim, and it is worth a test rather than a comment: if the
+/// expansion produced fields the encoder placed differently from where the interpreter reads
+/// them, every packet here would come back wrong.
+///
+/// Note the nibble array in the middle. Its elements are four bits, so they are not
+/// byte-aligned and neither is anything after them until the array ends — the case where an
+/// expansion that quietly rounded to bytes would show up.
+#[test]
+fn arrays_survive_the_interpreter() {
+    let checked = check!(arrays, "arrays.xml", None::<&str>, 256u64);
+    assert!(checked > 6_000, "only {checked} field(s) compared");
 }

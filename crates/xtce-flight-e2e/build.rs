@@ -19,6 +19,9 @@ const CASES: &[(&str, &str, Option<&str>)] = &[
     // Purpose-built. `leastSignificantByteFirst`, which an encoder has to invert rather than
     // merely apply.
     ("byte_order", "byte_order.xml", None),
+    // Purpose-built. Arrays, which are one field per element by the time the emitter sees
+    // them — this checks that nothing about the encoder needed to know that.
+    ("arrays", "arrays.xml", None),
     // A real mission definition: JPSS-1 attitude and ephemeris, three criteria deep.
     // Rooted at CCSDSPacket, not the telemetry sub-container: the criteria that select
     // JPSS_ATT_EPHEM test fields the primary header declares, and a plan that starts below

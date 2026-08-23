@@ -8,6 +8,7 @@ const CASES: &[(&str, &str)] = &[
     ("jpss", "jpss1_geolocation_xtce_v1.xml"),
     ("calibrated", "calibrated.xml"),
     ("byte_order", "byte_order.xml"),
+    ("arrays", "arrays.xml"),
 ];
 
 fn main() {
