@@ -19,9 +19,9 @@ xtce-flight = { path = "crates/xtce-flight", version = "0.1.0", default-features
 
 # Pinned to a revision, not a branch. `xtce_codegen::plan` is this project's input format;
 # a moving dependency would mean an unrelated commit there breaks a build here.
-xtce-model = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "338475947e4305b6ebe607bed93fe06e0cf2e0b8" }
-xtce-codegen = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "338475947e4305b6ebe607bed93fe06e0cf2e0b8" }
-xtce-decode = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "338475947e4305b6ebe607bed93fe06e0cf2e0b8" }
+xtce-model = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "330b4ada972592d3ff56d6d79197bb0e66caca8a" }
+xtce-codegen = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "330b4ada972592d3ff56d6d79197bb0e66caca8a" }
+xtce-decode = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "330b4ada972592d3ff56d6d79197bb0e66caca8a" }
 
 clap = { version = "4", features = ["derive"] }
 prettyplease = "0.2"

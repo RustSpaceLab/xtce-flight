@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Written for this project. No mission definition in reach sets `byteOrder` at all, so a
+  little-endian field had never been encoded by anything here.
+
+  For a decoder, `leastSignificantByteFirst` means: read the field big-endian, then reverse
+  `ceil(width / 8)` bytes of the value. For an encoder it means the same operation applied
+  again, because reversing bytes is its own inverse — but only while the field *is* a whole
+  number of bytes. It is not always: a twelve-bit field reverses to a sixteen-bit value, most
+  of which the field cannot hold, so most of what the decoder can produce has no encoding at
+  all. `xtce-flight` refuses those; `xtce-rs` decodes them, because agreeing with the
+  reference is its contract and inverting nothing is its problem.
+
+  So every field here is a whole number of bytes. What varies is everything else:
+
+  * U16_LE_ODD starts four bits into a byte. Whole bytes, unaligned — the reversal is still
+    exact, and the read and write are still shifts.
+  * U8_LE is one byte, where the reversal is the identity.
+  * SEL is little-endian and the criterion tests it, so `encode` has to write the reversal
+    *undone* or the interpreter will not recognise the packet. That inversion happens when
+    the code is generated, not when it runs.
+  * The big-endian controls at the end catch a generator that reversed everything.
+-->
+<SpaceSystem xmlns="http://www.omg.org/spec/XTCE/20180204" name="ByteOrder">
+  <TelemetryMetaData>
+    <ParameterTypeSet>
+      <IntegerParameterType name="U4">
+        <IntegerDataEncoding sizeInBits="4" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U16_LE_T">
+        <IntegerDataEncoding sizeInBits="16" encoding="unsigned"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U24_LE_T">
+        <IntegerDataEncoding sizeInBits="24" encoding="unsigned"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U32_LE_T">
+        <IntegerDataEncoding sizeInBits="32" encoding="unsigned"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U64_LE_T">
+        <IntegerDataEncoding sizeInBits="64" encoding="unsigned"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="S16_LE_T">
+        <IntegerDataEncoding sizeInBits="16" encoding="twosComplement"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="S32_LE_T">
+        <IntegerDataEncoding sizeInBits="32" encoding="twosComplement"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U8_LE_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>
+
+      <FloatParameterType name="F16_LE_T">
+        <FloatDataEncoding sizeInBits="16" encoding="IEEE754"
+                           byteOrder="leastSignificantByteFirst"/>
+      </FloatParameterType>
+      <FloatParameterType name="F32_LE_T">
+        <FloatDataEncoding sizeInBits="32" encoding="IEEE754"
+                           byteOrder="leastSignificantByteFirst"/>
+      </FloatParameterType>
+      <FloatParameterType name="F64_LE_T">
+        <FloatDataEncoding sizeInBits="64" encoding="IEEE754"
+                           byteOrder="leastSignificantByteFirst"/>
+      </FloatParameterType>
+
+      <IntegerParameterType name="U16_BE_T">
+        <IntegerDataEncoding sizeInBits="16" encoding="unsigned"/>
+      </IntegerParameterType>
+      <FloatParameterType name="F32_BE_T">
+        <FloatDataEncoding sizeInBits="32" encoding="IEEE754"/>
+      </FloatParameterType>
+    </ParameterTypeSet>
+
+    <ParameterSet>
+      <Parameter name="SEL" parameterTypeRef="U16_LE_T"/>
+      <Parameter name="U16_LE" parameterTypeRef="U16_LE_T"/>
+      <Parameter name="U24_LE" parameterTypeRef="U24_LE_T"/>
+      <Parameter name="U32_LE" parameterTypeRef="U32_LE_T"/>
+      <Parameter name="U64_LE" parameterTypeRef="U64_LE_T"/>
+      <Parameter name="S16_LE" parameterTypeRef="S16_LE_T"/>
+      <Parameter name="S32_LE" parameterTypeRef="S32_LE_T"/>
+      <Parameter name="F16_LE" parameterTypeRef="F16_LE_T"/>
+      <Parameter name="F32_LE" parameterTypeRef="F32_LE_T"/>
+      <Parameter name="F64_LE" parameterTypeRef="F64_LE_T"/>
+      <Parameter name="U8_LE" parameterTypeRef="U8_LE_T"/>
+      <Parameter name="NIB" parameterTypeRef="U4"/>
+      <Parameter name="U16_LE_ODD" parameterTypeRef="U16_LE_T"/>
+      <Parameter name="PAD_4" parameterTypeRef="U4"/>
+      <Parameter name="U16_BE" parameterTypeRef="U16_BE_T"/>
+      <Parameter name="F32_BE" parameterTypeRef="F32_BE_T"/>
+    </ParameterSet>
+
+    <ContainerSet>
+      <SequenceContainer name="Root" abstract="true">
+        <EntryList>
+          <ParameterRefEntry parameterRef="SEL"/>
+        </EntryList>
+      </SequenceContainer>
+
+      <!-- 0x0102 on the wire reverses to 0x0201, which is 513. -->
+      <SequenceContainer name="Telemetry">
+        <EntryList>
+          <ParameterRefEntry parameterRef="U16_LE"/>
+          <ParameterRefEntry parameterRef="U24_LE"/>
+          <ParameterRefEntry parameterRef="U32_LE"/>
+          <ParameterRefEntry parameterRef="U64_LE"/>
+          <ParameterRefEntry parameterRef="S16_LE"/>
+          <ParameterRefEntry parameterRef="S32_LE"/>
+          <ParameterRefEntry parameterRef="F16_LE"/>
+          <ParameterRefEntry parameterRef="F32_LE"/>
+          <ParameterRefEntry parameterRef="F64_LE"/>
+          <ParameterRefEntry parameterRef="U8_LE"/>
+          <!-- Four bits, so the next field is whole bytes at an unaligned offset. -->
+          <ParameterRefEntry parameterRef="NIB"/>
+          <ParameterRefEntry parameterRef="U16_LE_ODD"/>
+          <ParameterRefEntry parameterRef="PAD_4"/>
+          <ParameterRefEntry parameterRef="U16_BE"/>
+          <ParameterRefEntry parameterRef="F32_BE"/>
+        </EntryList>
+        <BaseContainer containerRef="Root">
+          <RestrictionCriteria>
+            <Comparison parameterRef="SEL" value="513" useCalibratedValue="false"/>
+          </RestrictionCriteria>
+        </BaseContainer>
+      </SequenceContainer>
+    </ContainerSet>
+  </TelemetryMetaData>
+</SpaceSystem>

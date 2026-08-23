@@ -63,6 +63,12 @@ pub struct FlightField {
     pub bit_width: u32,
     /// What the caller supplies and how it becomes bits.
     pub kind: Kind,
+    /// Whether the field's bytes are reversed on the wire.
+    ///
+    /// `byteOrder="leastSignificantByteFirst"`. Unlike a decoder, an encoder has to be able
+    /// to *invert* it, which is why only whole-byte widths are compiled — see `flatten`'s
+    /// neighbour, `check_byte_order`.
+    pub swap_bytes: bool,
     /// The calibrator the ground will apply to this field, if any.
     ///
     /// It changes nothing about encoding. A spacecraft has an ADC count, not a temperature;
@@ -81,8 +87,14 @@ pub struct Constant {
     pub bit_offset: usize,
     /// How wide they are.
     pub bit_width: u32,
-    /// The raw value to write, already masked to the width.
+    /// The raw value to write, already masked to the width — and, for a little-endian
+    /// field, already reversed, because what goes on the wire is the reversal undone.
     pub raw: u64,
+    /// The value a decoder will report for these bits, which is [`Self::raw`] for a
+    /// big-endian field and the reversal of it for a little-endian one.
+    ///
+    /// Only a test needs this: the encoder writes `raw`, and the interpreter reports this.
+    pub reported: u64,
 }
 
 /// What the caller supplies for a field, and therefore how it is written.
@@ -298,18 +310,38 @@ impl Builder {
             });
         }
 
+        if guard.swap_bytes && guard.bit_width % 8 != 0 {
+            return Err(FlightError::Unsupported {
+                element: "Comparison".to_owned(),
+                container: container.to_owned(),
+                reason: "reversing the bytes of a criterion that is not a whole number of \
+                         them has no inverse, so there is no value to write",
+            });
+        }
+
         // The criterion's literal was read as a signed integer because the parameter it tests
         // may be signed. What goes into the packet is the raw bit pattern, so it is masked to
         // the field's width — the same truncation the comparison itself performs.
         let mask = mask_for(guard.bit_width);
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let raw = (guard.value as i64 as u64) & mask;
+        // A criterion on a little-endian field compares the value *after* the reversal, so
+        // what goes on the wire is the reversal undone. It is a whole number of bytes here,
+        // so that is just the bytes the other way round — and it costs nothing at run time,
+        // because it happens now.
+        let reported = raw;
+        let raw = if guard.swap_bytes {
+            reverse_bytes(raw, guard.bit_width)
+        } else {
+            raw
+        };
 
         Ok(Constant {
             xtce_name: guard.xtce_name.clone(),
             bit_offset: guard.bit_offset,
             bit_width: guard.bit_width,
             raw,
+            reported,
         })
     }
 
@@ -370,12 +402,24 @@ impl Builder {
             }
         };
 
+        if field.swap_bytes && bit_width % 8 != 0 {
+            // Reversing `ceil(width / 8)` bytes of a value narrower than that many bytes
+            // pushes bits above the width, so a twelve-bit field decodes to numbers up to
+            // sixteen bits wide. Most of those have no encoding at all, and an encoder whose
+            // output does not survive its own decoder is worse than one that says no.
+            return Err(refuse(
+                "reversing the bytes of a field that is not a whole number of them has no \
+                 inverse: it decodes to values the field cannot hold",
+            ));
+        }
+
         Ok(FlightField {
             xtce_name: field.xtce_name.clone(),
             ident: field.ident.clone(),
             bit_offset,
             bit_width,
             kind,
+            swap_bytes: field.swap_bytes,
             calibration: field.calibration.clone(),
         })
     }
@@ -586,6 +630,22 @@ fn unique(taken: &mut HashMap<String, u32>, base: String) -> String {
     } else {
         format!("{base}{count}")
     }
+}
+
+/// The low `width / 8` bytes of `value`, the other way round.
+///
+/// Only ever called for a width that is a whole number of bytes, which is what makes it an
+/// involution and therefore invertible: reversing twice is the identity, so a value written
+/// this way comes back unchanged.
+pub(crate) fn reverse_bytes(value: u64, width: u32) -> u64 {
+    let bytes = width as usize / 8;
+    let mut out = 0u64;
+    let mut remaining = value;
+    for _ in 0..bytes {
+        out = (out << 8) | (remaining & 0xFF);
+        remaining >>= 8;
+    }
+    out
 }
 
 /// The low `width` bits set.

@@ -61,10 +61,10 @@ check folds away. The script then reads the IR and fails if any reference to the
 machinery survived. It also fails if the probe's own functions are *absent* from the IR, so
 it cannot pass by having optimised away the code it is meant to inspect.
 
-Current result, on the four definitions the probe compiles:
+Current result, on the five definitions the probe compiles:
 
 ```
-no panic path in 6118 lines of IR for thumbv7em-none-eabihf
+no panic path in 7217 lines of IR for thumbv7em-none-eabihf
 ```
 
 ## How correctness is argued
@@ -117,13 +117,29 @@ than one that stops, because the gap only shows up in flight.
 | Container inheritance and equality restriction criteria | Yes |
 | `BooleanExpression`: a conjunction of `Condition`s | Yes — it is a conjunction of equalities however the XML spells it |
 | `ORedConditions` | Refused — a disjunction is not a packet an encoder can write |
+| `leastSignificantByteFirst`, whole-byte widths | Yes — including a criterion, inverted when the code is generated |
+| `leastSignificantByteFirst`, other widths | Refused — reversing a value narrower than its byte count has no inverse |
 | `DefaultCalibrator`: polynomial and spline | Yes — on the decode side, as an accessor |
 | `ContextCalibrator`, splines above first order | Refused |
 | A width that comes from the packet | Refused — it has no fixed place in a `struct` |
 | An inequality restriction criterion | Refused — it names a set, and an encoder writes one value |
 | A float that is not 16, 32 or 64 bits | Refused — there is no such IEEE-754 format |
 | Text or binary off a byte boundary | Refused — it is written as a slice |
-| Little-endian fields, arrays | Not yet |
+| Arrays, aggregates | Not yet |
+
+### Byte order is an operation to invert, not to apply
+
+A decoder reads a `leastSignificantByteFirst` field big-endian and reverses `ceil(width / 8)`
+bytes of the value. An encoder has to undo that, which for a whole number of bytes is the
+same operation again — reversing bytes is its own inverse — and for anything else is not
+possible at all: a twelve-bit field decodes to values up to sixteen bits wide, and most of
+them cannot be written back. Whole-byte widths compile; the rest are refused with that as the
+reason.
+
+The case worth naming is a *criterion* on a little-endian field. It compares the value after
+the reversal, so `encode` has to write the reversal undone — and it does, computed when the
+code is generated rather than costing anything in flight. Getting that wrong would not
+produce a wrong number; it would produce a packet the ground cannot recognise at all.
 
 ### Calibration does not touch encoding
 
@@ -177,7 +193,7 @@ no mission definition in reach has a 16-bit float at all.
 ## Testing
 
 ```console
-$ cargo test --workspace                        # 26 tests, no Python needed
+$ cargo test --workspace                        # 29 tests, no Python needed
 $ ./scripts/check-no-panic.sh                   # the bare-metal gate
 ```
 
@@ -201,8 +217,9 @@ tested without putting them in the repository.
 | `testdata/calibrated.xml` | purpose-built: polynomials over both an integer and a float encoding, a negative exponent, and splines of both orders |
 | `testdata/calibrated_bounded.xml` | purpose-built: one spline that may not extrapolate, so the refusal can be driven on both sides of every boundary |
 | `testdata/contrived_inheritance_structure.xml` | a real mission definition whose container is selected by a `<BooleanExpression>` rather than a `<ComparisonList>` |
+| `testdata/byte_order.xml` | purpose-built: little-endian fields of every whole-byte width, aligned and not, and a little-endian criterion |
 
-Four of the six are written rather than found, and deliberately so. Mission files are the
+Five of the seven are written rather than found, and deliberately so. Mission files are the
 right thing to validate against, but between them they reach almost none of an encoder's
 edges: no label that needs sanitising, no terminated string, no float at an offset that makes
 it span an extra byte, and **no calibrator anywhere at all**. Two bugs in this repository

@@ -456,3 +456,76 @@ fn a_disjunction_of_conditions_is_refused() {
         "unexpected refusal: {message}"
     );
 }
+
+/// Reversing the bytes of a field that is not a whole number of them has no inverse.
+///
+/// A decoder can do it — `xtce-rs` does, because agreeing with the reference is its contract
+/// — and a twelve-bit little-endian field then decodes to values up to sixteen bits wide.
+/// Most of those cannot be written back into twelve bits at all, so an encoder that accepted
+/// the field would produce packets its own decoder disagrees with.
+#[test]
+fn a_little_endian_field_that_is_not_whole_bytes_is_refused() {
+    let refused = layout_of(&one_field(
+        r#"<IntegerParameterType name="FIELD_T">
+        <IntegerDataEncoding sizeInBits="12" encoding="unsigned"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>"#,
+        4,
+    ));
+    let message = refusal(refused);
+    assert!(
+        message.contains("no inverse"),
+        "unexpected refusal: {message}"
+    );
+
+    // Sixteen bits of the same thing is a whole number of bytes, and compiles.
+    let layout = layout_of(&one_field(
+        r#"<IntegerParameterType name="FIELD_T">
+        <IntegerDataEncoding sizeInBits="16" encoding="unsigned"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>"#,
+        0,
+    ))
+    .expect("whole bytes compile");
+    assert!(layout.containers[0].fields[0].swap_bytes);
+}
+
+/// A criterion on a little-endian field is written with its bytes the other way round.
+///
+/// The interpreter compares the value *after* the reversal, so the encoder has to write the
+/// reversal undone — and that happens here, when the code is generated, rather than costing
+/// anything at run time.
+#[test]
+fn a_little_endian_criterion_is_inverted_when_it_is_planned() {
+    let body = r#"    <ParameterTypeSet>
+      <IntegerParameterType name="SEL_T">
+        <IntegerDataEncoding sizeInBits="16" encoding="unsigned"
+                             byteOrder="leastSignificantByteFirst"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U8"><IntegerDataEncoding sizeInBits="8" encoding="unsigned"/></IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet>
+      <Parameter name="SEL" parameterTypeRef="SEL_T"/>
+      <Parameter name="BODY" parameterTypeRef="U8"/>
+    </ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Base" abstract="true">
+        <EntryList><ParameterRefEntry parameterRef="SEL"/></EntryList>
+      </SequenceContainer>
+      <SequenceContainer name="Child">
+        <EntryList><ParameterRefEntry parameterRef="BODY"/></EntryList>
+        <BaseContainer containerRef="Base">
+          <RestrictionCriteria>
+            <Comparison parameterRef="SEL" value="513" useCalibratedValue="false"/>
+          </RestrictionCriteria>
+        </BaseContainer>
+      </SequenceContainer>
+    </ContainerSet>"#;
+
+    let layout = layout_of(body).expect("compiles");
+    let constant = &layout.containers[0].constants[0];
+    // 513 is 0x0201; the bytes that produce it are 0x01 0x02, which read big-endian are
+    // 0x0102 — 258.
+    assert_eq!(constant.reported, 513);
+    assert_eq!(constant.raw, 258);
+}

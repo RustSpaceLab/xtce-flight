@@ -325,7 +325,9 @@ fn case(container: &Container, enums: &[EnumType], path: &TokenStream) -> TokenS
 
     let criteria = container.constants.iter().map(|constant| {
         let xtce = &constant.xtce_name;
-        let raw = Literal::u64_unsuffixed(constant.raw);
+        // What the interpreter reports, not what goes on the wire: for a little-endian
+        // criterion those differ, and the comparison is against the interpreter.
+        let raw = Literal::u64_unsuffixed(constant.reported);
         let mask = Literal::u64_unsuffixed(mask_for(constant.bit_width));
         quote! { (#xtce, #raw, #mask) }
     });

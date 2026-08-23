@@ -42,6 +42,7 @@ case!(jpss, "jpss");
 case!(calibrated, "calibrated");
 case!(calibrated_bounded, "calibrated_bounded");
 case!(contrived, "contrived");
+case!(byte_order, "byte_order");
 
 fn testdata(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -665,4 +666,18 @@ fn a_container_selected_by_conditions_round_trips() {
         128u64
     );
     assert!(checked > 2_000, "only {checked} field(s) compared");
+}
+
+/// Little-endian fields survive the round trip, including the criterion that selects them.
+///
+/// For a decoder `leastSignificantByteFirst` is an operation to apply; for an encoder it is
+/// one to *invert*. Reversing bytes is its own inverse, so a whole-byte field costs nothing
+/// — but `SEL` is the interesting one: the criterion compares the value *after* the
+/// reversal, so `encode` has to write the reversal undone or the interpreter will not
+/// recognise the packet at all. If it got that wrong, every packet here would fail to decode
+/// rather than decode to the wrong number.
+#[test]
+fn little_endian_fields_survive_the_interpreter() {
+    let checked = check!(byte_order, "byte_order.xml", None::<&str>, 256u64);
+    assert!(checked > 3_000, "only {checked} field(s) compared");
 }

@@ -444,6 +444,7 @@ fn encode_field(field: &FlightField, out: &Ident) -> TokenStream {
     }
 
     let raw = raw_from_value(field, &value);
+    let raw = reverse_if_little_endian(field, &raw);
     let check = range_check(field, &value, name);
     // `field_ident` escapes a keyword by appending an underscore, and `type__bits` is not a
     // snake-case name.
@@ -497,6 +498,32 @@ fn raw_from_value(field: &FlightField, value: &TokenStream) -> TokenStream {
         Kind::Enumerated(_) => quote!(#value.raw()),
         // Handled before this function is reached.
         Kind::Text { .. } | Kind::Binary => quote!(0),
+    }
+}
+
+/// Puts a little-endian field's bytes the other way round, on the way out.
+///
+/// The decoder reverses `width / 8` bytes of what it reads, so the encoder reverses them
+/// again — which is the same operation, because a byte reversal is its own inverse. Only
+/// whole-byte widths reach here; the layout refuses the rest, since reversing a value
+/// narrower than its byte count has no inverse at all.
+///
+/// `swap_bytes` on the widened integer does the reversal, and the shift discards the bytes
+/// above the field: a 24-bit value in a `u32` reverses to four bytes, of which the top three
+/// are the ones wanted.
+fn reverse_if_little_endian(field: &FlightField, raw: &TokenStream) -> TokenStream {
+    if !field.swap_bytes || field.bit_width <= 8 {
+        return raw.clone();
+    }
+    let natural = natural_bits(field.bit_width);
+    let ty = unsigned_type(natural);
+    let shift = Literal::u32_unsuffixed(natural - field.bit_width);
+    // `(#raw)` parenthesised: the expression is a masked `as` cast already, and `as` binds
+    // to its last operand rather than to the whole of it.
+    if natural == field.bit_width {
+        quote!(((#raw) as #ty).swap_bytes() as u64)
+    } else {
+        quote!((((#raw) as #ty).swap_bytes() >> #shift) as u64)
     }
 }
 
@@ -820,11 +847,11 @@ fn decode_field(field: &FlightField, data: &Ident, enums: &[EnumType]) -> TokenS
             quote!(#slice)
         }
         Kind::Bool => {
-            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let raw = read_bits_in_order(field, data);
             quote!((#raw) != 0)
         }
         Kind::Enumerated(index) => {
-            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let raw = read_bits_in_order(field, data);
             let ty = enum_name(*index, enums);
             quote! {
                 match #ty::from_raw(#raw) {
@@ -834,24 +861,24 @@ fn decode_field(field: &FlightField, data: &Ident, enums: &[EnumType]) -> TokenS
             }
         }
         Kind::Float16 => {
-            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let raw = read_bits_in_order(field, data);
             quote!(half_to_f32((#raw) as u16))
         }
         Kind::Float32 => {
-            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let raw = read_bits_in_order(field, data);
             quote!(f32::from_bits((#raw) as u32))
         }
         Kind::Float64 => {
-            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let raw = read_bits_in_order(field, data);
             quote!(f64::from_bits(#raw))
         }
         Kind::Unsigned => {
-            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let raw = read_bits_in_order(field, data);
             let ty = unsigned_type(natural_bits(field.bit_width));
             quote!((#raw) as #ty)
         }
         Kind::Signed(coding) => {
-            let raw = read_bits(field.bit_offset, field.bit_width, data);
+            let raw = read_bits_in_order(field, data);
             let ty = signed_type(natural_bits(field.bit_width));
             let signed = signed_from_raw(&raw, field.bit_width, *coding);
             quote!(#signed as #ty)
@@ -969,6 +996,22 @@ fn decode_text(
                 Err(_) => return Err(DecodeError::InvalidText { parameter: #name }),
             }
         }
+    }
+}
+
+/// A field's raw bits, with its byte order applied.
+fn read_bits_in_order(field: &FlightField, data: &Ident) -> TokenStream {
+    let raw = read_bits(field.bit_offset, field.bit_width, data);
+    if !field.swap_bytes || field.bit_width <= 8 {
+        return raw;
+    }
+    let natural = natural_bits(field.bit_width);
+    let ty = unsigned_type(natural);
+    let shift = Literal::u32_unsuffixed(natural - field.bit_width);
+    if natural == field.bit_width {
+        quote!(((#raw) as #ty).swap_bytes() as u64)
+    } else {
+        quote!((((#raw) as #ty).swap_bytes() >> #shift) as u64)
     }
 }
 

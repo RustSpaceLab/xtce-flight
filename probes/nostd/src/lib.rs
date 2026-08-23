@@ -38,6 +38,11 @@ pub mod calibrated {
     include!(concat!(env!("OUT_DIR"), "/calibrated.rs"));
 }
 
+#[allow(dead_code, clippy::all, clippy::pedantic)]
+pub mod byte_order {
+    include!(concat!(env!("OUT_DIR"), "/byte_order.rs"));
+}
+
 /// Encodes a `NumericEdges` packet, exercising every numeric shape the emitter produces.
 #[inline(never)]
 pub fn encode_numeric_edges(out: &mut [u8]) -> usize {
@@ -167,4 +172,38 @@ pub fn calibrate_all(data: &[u8]) -> f64 {
         }
     }
     sum
+}
+
+/// Encodes and decodes a packet of little-endian fields.
+///
+/// Here for the same reason as `calibrate_all`: a byte reversal that is generated but never
+/// called does not reach the emitted IR, and the panic check would pass without having
+/// looked at it.
+#[inline(never)]
+#[must_use]
+pub fn round_trip_little_endian(out: &mut [u8]) -> bool {
+    let packet = byte_order::Telemetry {
+        u16_le: 0x1234,
+        u24_le: 0x0012_3456,
+        u32_le: 0x1234_5678,
+        u64_le: 0x1234_5678_9ABC_DEF0,
+        s16_le: -1234,
+        s32_le: -123_456,
+        f16_le: 1.5,
+        f32_le: 2.5,
+        f64_le: 3.5,
+        u8_le: 7,
+        nib: 5,
+        u16_le_odd: 0xBEEF,
+        pad_4: 0,
+        u16_be: 0xCAFE,
+        f32_be: -4.5,
+    };
+    if packet.encode(out).is_err() {
+        return false;
+    }
+    match byte_order::Telemetry::decode(out) {
+        Ok(returned) => returned == packet,
+        Err(_) => false,
+    }
 }
