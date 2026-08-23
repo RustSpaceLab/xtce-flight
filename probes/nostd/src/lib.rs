@@ -48,6 +48,11 @@ pub mod arrays {
     include!(concat!(env!("OUT_DIR"), "/arrays.rs"));
 }
 
+#[allow(dead_code, clippy::all, clippy::pedantic)]
+pub mod aggregates {
+    include!(concat!(env!("OUT_DIR"), "/aggregates.rs"));
+}
+
 /// Encodes a `NumericEdges` packet, exercising every numeric shape the emitter produces.
 #[inline(never)]
 pub fn encode_numeric_edges(out: &mut [u8]) -> usize {
@@ -254,6 +259,38 @@ pub fn round_trip_arrays(out: &mut [u8]) -> bool {
         return false;
     }
     match arrays::Telemetry::decode(out) {
+        Ok(returned) => returned == packet,
+        Err(_) => false,
+    }
+}
+
+/// Encodes and decodes a packet of aggregates, arrays of them, and an array inside one.
+#[inline(never)]
+#[must_use]
+pub fn round_trip_aggregates(out: &mut [u8]) -> bool {
+    let packet = aggregates::Telemetry {
+        lead: 1,
+        rail_voltage: 3.3,
+        rail_current: 0.5,
+        rail_ok: 1,
+        rails_0_voltage: 5.0,
+        rails_0_current: 1.25,
+        rails_0_ok: 1,
+        rails_1_voltage: 12.0,
+        rails_1_current: 2.5,
+        rails_1_ok: 0,
+        state_mode: 2,
+        state_samples_0: -1,
+        state_samples_1: 0,
+        state_samples_2: 1,
+        state_flags: 9,
+        pad_4: 0,
+        tail: 7,
+    };
+    if packet.encode(out).is_err() {
+        return false;
+    }
+    match aggregates::Telemetry::decode(out) {
         Ok(returned) => returned == packet,
         Err(_) => false,
     }

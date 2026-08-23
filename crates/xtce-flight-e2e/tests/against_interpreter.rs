@@ -44,6 +44,7 @@ case!(calibrated_bounded, "calibrated_bounded");
 case!(contrived, "contrived");
 case!(byte_order, "byte_order");
 case!(arrays, "arrays");
+case!(aggregates, "aggregates");
 
 fn testdata(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -698,4 +699,17 @@ fn little_endian_fields_survive_the_interpreter() {
 fn arrays_survive_the_interpreter() {
     let checked = check!(arrays, "arrays.xml", None::<&str>, 256u64);
     assert!(checked > 6_000, "only {checked} field(s) compared");
+}
+
+/// Aggregates survive the round trip, and needed nothing of the encoder either.
+///
+/// Same claim as arrays and the same reason it is worth testing rather than asserting: by the
+/// time this generator runs there are no aggregates, only seventeen fields with names like
+/// `STATE.samples[2]`. The fixture nests the two in both directions and ends its aggregate on
+/// a four-bit member, so nothing after it is byte-aligned until the pad — an expansion that
+/// rounded a member up to a byte would move every field behind it.
+#[test]
+fn aggregates_survive_the_interpreter() {
+    let checked = check!(aggregates, "aggregates.xml", None::<&str>, 256u64);
+    assert!(checked > 4_000, "only {checked} field(s) compared");
 }

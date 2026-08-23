@@ -9,6 +9,7 @@ const CASES: &[(&str, &str)] = &[
     ("calibrated", "calibrated.xml"),
     ("byte_order", "byte_order.xml"),
     ("arrays", "arrays.xml"),
+    ("aggregates", "aggregates.xml"),
 ];
 
 fn main() {
