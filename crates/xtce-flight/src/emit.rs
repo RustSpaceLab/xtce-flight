@@ -561,7 +561,18 @@ fn encode_body(container: &Container) -> TokenStream {
             Some(name) => format_ident!("fixed_{}", xtce_codegen::plan::field_ident(name)),
             None => format_ident!("fixed_value_{index}"),
         };
-        let raw = Literal::u64_unsuffixed(fixed.raw);
+        let Some(raw) = fixed.as_u64() else {
+            // Wider than a literal. The layout has already established it is whole bytes, so
+            // each one is its own assignment — no shifts, no accumulator, and every index a
+            // literal into an array of known length, as everywhere else here.
+            let writes = fixed.value.iter().enumerate().map(|(offset, byte)| {
+                let at = Literal::usize_unsuffixed(fixed.bit_offset / 8 + offset);
+                let byte = Literal::u8_unsuffixed(*byte);
+                quote! { #out[#at] = #byte; }
+            });
+            return quote! { #(#writes)* };
+        };
+        let raw = Literal::u64_unsuffixed(raw);
         let write = write_bits(fixed.bit_offset, fixed.bit_width, &quote!(#binding), &out);
         quote! {
             {

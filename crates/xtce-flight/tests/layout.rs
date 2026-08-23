@@ -841,20 +841,47 @@ fn a_fixed_value_becomes_bits_the_encoder_writes() {
     assert_eq!(fixed[0].bit_offset, 0);
     assert_eq!(fixed[0].bit_width, 16);
     // Four bytes given for sixteen bits: the low half is what goes on the wire.
-    assert_eq!(fixed[0].raw, 0xBEEF);
+    assert_eq!(fixed[0].as_u64(), Some(0xBEEF));
     // The argument sits after it, and is the caller's to set.
     assert_eq!(layout.containers[0].fields.len(), 1);
     assert_eq!(layout.containers[0].fields[0].bit_offset, 16);
 }
 
-/// A fixed value wider than a `u64` is refused rather than written in pieces.
+/// A fixed value wider than a `u64` is written a byte at a time.
+///
+/// Above 64 bits there is no literal to write it as, but a whole number of bytes starting on
+/// one needs no literal: each byte is its own assignment at its own index.
 #[test]
-fn a_fixed_value_wider_than_64_bits_is_refused() {
-    let error = refusal(command_layout(
+fn a_fixed_value_wider_than_64_bits_is_written_byte_by_byte() {
+    let layout = command_layout(
         r#"            <FixedValueEntry name="FILL" binaryValue="00112233445566778899AABBCCDDEEFF" sizeInBits="128"/>"#,
+    )
+    .expect("sixteen whole bytes compile");
+
+    let fixed = &layout.containers[0].fixed[0];
+    assert_eq!(fixed.bit_width, 128);
+    assert_eq!(fixed.as_u64(), None, "too wide for one literal");
+    assert!(fixed.is_byte_aligned());
+    assert_eq!(
+        fixed.value,
+        vec![
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xEE, 0xFF
+        ]
+    );
+    assert_eq!(layout.containers[0].fields[0].bit_offset, 128);
+}
+
+/// One wider than a `u64` that is *not* whole bytes is refused.
+///
+/// It would have to be shifted across every byte it touches, and nothing in reach asks for it.
+#[test]
+fn a_wide_fixed_value_off_a_byte_boundary_is_refused() {
+    let error = refusal(command_layout(
+        r#"            <FixedValueEntry name="FILL" binaryValue="00112233445566778899AABBCC" sizeInBits="100"/>"#,
     ));
     assert!(
-        error.contains("FixedValueEntry") && error.contains("64 bits"),
+        error.contains("FixedValueEntry") && error.contains("whole number of them"),
         "unexpected refusal: {error}"
     );
 }

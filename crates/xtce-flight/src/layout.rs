@@ -180,7 +180,33 @@ pub struct FixedValue {
     /// How wide they are.
     pub bit_width: u32,
     /// The value, already reduced to the width — see `xtce_codegen::plan::FixedBits`.
-    pub raw: u64,
+    ///
+    /// Exactly `bit_width.div_ceil(8)` bytes, right-aligned, with the leading bits the width
+    /// does not reach already cleared.
+    pub value: Vec<u8>,
+}
+
+impl FixedValue {
+    /// The value as one integer, when it fits in one.
+    ///
+    /// `None` above 64 bits, where the encoder writes it a byte at a time instead.
+    #[must_use]
+    pub fn as_u64(&self) -> Option<u64> {
+        if self.bit_width > 64 {
+            return None;
+        }
+        let mut raw = 0u64;
+        for byte in &self.value {
+            raw = (raw << 8) | u64::from(*byte);
+        }
+        Some(raw)
+    }
+
+    /// Whether the value starts on a byte and occupies a whole number of them.
+    #[must_use]
+    pub const fn is_byte_aligned(&self) -> bool {
+        self.bit_offset % 8 == 0 && self.bit_width % 8 == 0
+    }
 }
 
 /// What the caller supplies for a field, and therefore how it is written.
@@ -419,23 +445,26 @@ impl Builder {
     /// The plan has already reduced the value to the declared width, so all that is left is
     /// to check it fits one literal.
     fn fixed_value(fixed: &FixedBits, container: &str) -> Result<FixedValue, FlightError> {
-        if fixed.bit_width > 64 {
-            return Err(FlightError::Unsupported {
-                element: "FixedValueEntry".to_owned(),
-                container: container.to_owned(),
-                reason: "a fixed value wider than 64 bits cannot be written as one literal",
-            });
-        }
-        let mut raw = 0u64;
-        for byte in &fixed.value {
-            raw = (raw << 8) | u64::from(*byte);
-        }
-        Ok(FixedValue {
+        let value = FixedValue {
             xtce_name: fixed.xtce_name.clone(),
             bit_offset: fixed.bit_offset,
             bit_width: fixed.bit_width,
-            raw,
-        })
+            value: fixed.value.clone(),
+        };
+        // Up to 64 bits it is written as one literal, wherever it starts. Above that it is
+        // written a byte at a time, which needs it to *be* whole bytes: a 96-bit fill pattern
+        // starting four bits into a byte would have to be shifted across thirteen of them, and
+        // nothing in reach asks for that.
+        if value.as_u64().is_none() && !value.is_byte_aligned() {
+            return Err(FlightError::Unsupported {
+                element: "FixedValueEntry".to_owned(),
+                container: container.to_owned(),
+                reason: "a fixed value wider than 64 bits has to start on a byte and occupy a \
+                         whole number of them, or it cannot be written without shifting it \
+                         across every byte it touches",
+            });
+        }
+        Ok(value)
     }
 
     /// Whether a criterion covers exactly the bits of a field.
