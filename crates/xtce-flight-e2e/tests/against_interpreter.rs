@@ -41,6 +41,7 @@ case!(flight_shapes, "flight_shapes");
 case!(jpss, "jpss");
 case!(calibrated, "calibrated");
 case!(calibrated_bounded, "calibrated_bounded");
+case!(contrived, "contrived");
 
 fn testdata(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -646,4 +647,22 @@ fn a_bounded_spline_refuses_outside_its_points() {
     // 50 to 200 inclusive is 151 of the 256 values, and the rest have no answer.
     assert_eq!(answered, 151);
     assert_eq!(refused, 105);
+}
+
+/// A container selected by a `<BooleanExpression>` survives the round trip.
+///
+/// `contrived_inheritance_structure.xml` is the only real definition in reach whose criteria
+/// are conditions rather than comparisons. Nothing about encoding changes — a conjunction of
+/// equalities is a conjunction of equalities however the XML spells it — but that is a claim
+/// worth checking rather than asserting, because if `encode` failed to write one of the
+/// conditions the interpreter would not recognise the packet at all.
+#[test]
+fn a_container_selected_by_conditions_round_trips() {
+    let checked = check!(
+        contrived,
+        "contrived_inheritance_structure.xml",
+        None::<&str>,
+        128u64
+    );
+    assert!(checked > 2_000, "only {checked} field(s) compared");
 }

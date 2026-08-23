@@ -237,7 +237,7 @@ dependencies = [
 [[package]]
 name = "xtce-codegen"
 version = "0.1.0"
-source = "git+https://github.com/RustSpaceLab/xtce-rs?rev=41698b999794613f2704b340d5094608b1705df9#41698b999794613f2704b340d5094608b1705df9"
+source = "git+https://github.com/RustSpaceLab/xtce-rs?rev=338475947e4305b6ebe607bed93fe06e0cf2e0b8#338475947e4305b6ebe607bed93fe06e0cf2e0b8"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -250,7 +250,7 @@ dependencies = [
 [[package]]
 name = "xtce-decode"
 version = "0.1.0"
-source = "git+https://github.com/RustSpaceLab/xtce-rs?rev=41698b999794613f2704b340d5094608b1705df9#41698b999794613f2704b340d5094608b1705df9"
+source = "git+https://github.com/RustSpaceLab/xtce-rs?rev=338475947e4305b6ebe607bed93fe06e0cf2e0b8#338475947e4305b6ebe607bed93fe06e0cf2e0b8"
 dependencies = [
  "thiserror",
  "xtce-model",
@@ -282,7 +282,7 @@ dependencies = [
 [[package]]
 name = "xtce-model"
 version = "0.1.0"
-source = "git+https://github.com/RustSpaceLab/xtce-rs?rev=41698b999794613f2704b340d5094608b1705df9#41698b999794613f2704b340d5094608b1705df9"
+source = "git+https://github.com/RustSpaceLab/xtce-rs?rev=338475947e4305b6ebe607bed93fe06e0cf2e0b8#338475947e4305b6ebe607bed93fe06e0cf2e0b8"
 dependencies = [
  "quick-xml",
  "thiserror",

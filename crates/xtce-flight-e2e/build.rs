@@ -21,6 +21,10 @@ const CASES: &[(&str, &str, Option<&str>)] = &[
     // JPSS_ATT_EPHEM test fields the primary header declares, and a plan that starts below
     // them cannot see the bits they name.
     ("jpss", "jpss1_geolocation_xtce_v1.xml", None),
+    // The same packet, selected by a <BooleanExpression> instead of a <ComparisonList>. It
+    // is the only real definition in reach with one, and every condition has to be written
+    // by `encode` or the interpreter will not recognise what comes out.
+    ("contrived", "contrived_inheritance_structure.xml", None),
 ];
 
 fn main() {

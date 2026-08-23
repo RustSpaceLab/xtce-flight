@@ -115,6 +115,8 @@ than one that stops, because the gap only shows up in flight.
 | Fixed-size text: whole-buffer, terminated, length-prefixed | Yes |
 | Fixed-size binary | Yes |
 | Container inheritance and equality restriction criteria | Yes |
+| `BooleanExpression`: a conjunction of `Condition`s | Yes — it is a conjunction of equalities however the XML spells it |
+| `ORedConditions` | Refused — a disjunction is not a packet an encoder can write |
 | `DefaultCalibrator`: polynomial and spline | Yes — on the decode side, as an accessor |
 | `ContextCalibrator`, splines above first order | Refused |
 | A width that comes from the packet | Refused — it has no fixed place in a `struct` |
@@ -175,7 +177,7 @@ no mission definition in reach has a 16-bit float at all.
 ## Testing
 
 ```console
-$ cargo test --workspace                        # 23 tests, no Python needed
+$ cargo test --workspace                        # 26 tests, no Python needed
 $ ./scripts/check-no-panic.sh                   # the bare-metal gate
 ```
 
@@ -198,8 +200,9 @@ tested without putting them in the repository.
 | `testdata/flight_shapes.xml` | purpose-built: inheritance, enumerations whose labels are not Rust identifiers, and all three ways XTCE delimits a string |
 | `testdata/calibrated.xml` | purpose-built: polynomials over both an integer and a float encoding, a negative exponent, and splines of both orders |
 | `testdata/calibrated_bounded.xml` | purpose-built: one spline that may not extrapolate, so the refusal can be driven on both sides of every boundary |
+| `testdata/contrived_inheritance_structure.xml` | a real mission definition whose container is selected by a `<BooleanExpression>` rather than a `<ComparisonList>` |
 
-Four of the five are written rather than found, and deliberately so. Mission files are the
+Four of the six are written rather than found, and deliberately so. Mission files are the
 right thing to validate against, but between them they reach almost none of an encoder's
 edges: no label that needs sanitising, no terminated string, no float at an offset that makes
 it span an extra byte, and **no calibrator anywhere at all**. Two bugs in this repository

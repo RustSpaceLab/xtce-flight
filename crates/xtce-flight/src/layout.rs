@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use xtce_codegen::plan::{TextCharset, TextDelimiter};
-use xtce_codegen::{Calibration, ContainerPlan, Field, Guard, Node, Plan, Repr};
+use xtce_codegen::{Calibration, ContainerPlan, Criterion, Field, Guard, Node, Plan, Repr};
 use xtce_model::CompareOp;
 use xtce_model::types::IntegerCoding;
 
@@ -201,7 +201,10 @@ impl Builder {
 
         for (criteria, child) in &node.children {
             let depth = guards.len();
-            guards.extend(criteria.iter().cloned());
+            // Only what a *writer* can satisfy. An encoder has to produce one packet, and
+            // the criteria are what make it recognisable; a disjunction says any of several
+            // packets would do, which is a choice the definition has not made.
+            flatten(criteria, guards, &node.xtce_name)?;
             self.walk(child, guards, plan, out)?;
             guards.truncate(depth);
         }
@@ -276,6 +279,9 @@ impl Builder {
     }
 
     fn constant(guard: &Guard, container: &str) -> Result<Constant, FlightError> {
+        // `flatten` has already established this. Kept because it is what makes the `raw`
+        // below meaningful, and a backstop that costs nothing is worth more than a comment
+        // saying it cannot happen.
         if guard.operator != CompareOp::Equal {
             return Err(FlightError::Unsupported {
                 element: "Comparison".to_owned(),
@@ -481,6 +487,54 @@ impl Builder {
         });
         self.by_variants.insert(key, index);
         Ok(index)
+    }
+}
+
+/// Collects the conjunction a criterion tree amounts to, or names why it is not one.
+///
+/// A decoder can evaluate any boolean expression: it has the packet in front of it. An
+/// encoder has to *produce* one, and for that the criteria have to say a single thing. A
+/// conjunction of equalities does; a disjunction does not, and neither does an inequality —
+/// `APID != 11` names every packet but one.
+fn flatten(
+    criterion: &Criterion,
+    into: &mut Vec<Guard>,
+    container: &str,
+) -> Result<(), FlightError> {
+    let refuse = |reason: &'static str| FlightError::Unsupported {
+        element: "RestrictionCriteria".to_owned(),
+        container: container.to_owned(),
+        reason,
+    };
+
+    match criterion {
+        Criterion::Test(guard) => {
+            if guard.operator != CompareOp::Equal {
+                return Err(refuse(
+                    "only an equality criterion has one value an encoder could write; an \
+                     inequality names a set",
+                ));
+            }
+            into.push(guard.clone());
+            Ok(())
+        }
+        Criterion::All(children) => {
+            for child in children {
+                flatten(child, into, container)?;
+            }
+            Ok(())
+        }
+        Criterion::Any(children) => {
+            // One branch would be a conjunction; more than one is a choice between packets
+            // that the definition leaves open and this generator will not make.
+            if let [only] = children.as_slice() {
+                return flatten(only, into, container);
+            }
+            Err(refuse(
+                "a disjunction says any of several packets would satisfy the criteria, which \
+                 is not a packet an encoder can write",
+            ))
+        }
     }
 }
 

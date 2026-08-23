@@ -349,3 +349,110 @@ fn type_names_keep_mixed_case_and_fold_shouting() {
     assert_eq!(type_ident("9600"), "C9600");
     assert_eq!(type_ident("---"), "Value");
 }
+
+/// An `<ANDedConditions>` is a conjunction, so it becomes constants like any other.
+#[test]
+fn a_conjunction_of_conditions_becomes_constants() {
+    let body = r#"    <ParameterTypeSet>
+      <IntegerParameterType name="U8"><IntegerDataEncoding sizeInBits="8" encoding="unsigned"/></IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet>
+      <Parameter name="A" parameterTypeRef="U8"/>
+      <Parameter name="B" parameterTypeRef="U8"/>
+      <Parameter name="BODY" parameterTypeRef="U8"/>
+    </ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Base" abstract="true">
+        <EntryList>
+          <ParameterRefEntry parameterRef="A"/>
+          <ParameterRefEntry parameterRef="B"/>
+        </EntryList>
+      </SequenceContainer>
+      <SequenceContainer name="Child">
+        <EntryList><ParameterRefEntry parameterRef="BODY"/></EntryList>
+        <BaseContainer containerRef="Base">
+          <RestrictionCriteria>
+            <BooleanExpression>
+              <ANDedConditions>
+                <Condition>
+                  <ParameterInstanceRef parameterRef="A" useCalibratedValue="false"/>
+                  <ComparisonOperator>==</ComparisonOperator>
+                  <Value>7</Value>
+                </Condition>
+                <Condition>
+                  <ParameterInstanceRef parameterRef="B" useCalibratedValue="false"/>
+                  <ComparisonOperator>==</ComparisonOperator>
+                  <Value>9</Value>
+                </Condition>
+              </ANDedConditions>
+            </BooleanExpression>
+          </RestrictionCriteria>
+        </BaseContainer>
+      </SequenceContainer>
+    </ContainerSet>"#;
+
+    let layout = layout_of(body).expect("compiles");
+    let child = &layout.containers[0];
+    let written: Vec<(&str, u64)> = child
+        .constants
+        .iter()
+        .map(|constant| (constant.xtce_name.as_str(), constant.raw))
+        .collect();
+    assert_eq!(written, [("A", 7), ("B", 9)]);
+    assert_eq!(
+        child
+            .fields
+            .iter()
+            .map(|field| field.xtce_name.as_str())
+            .collect::<Vec<_>>(),
+        ["BODY"],
+        "both criteria are written by encode, so neither is the caller's to set"
+    );
+}
+
+/// A disjunction is not a packet.
+///
+/// A decoder can evaluate any boolean expression — it has the packet in front of it. An
+/// encoder has to produce one, and `A == 1 || A == 2` does not say which.
+#[test]
+fn a_disjunction_of_conditions_is_refused() {
+    let body = r#"    <ParameterTypeSet>
+      <IntegerParameterType name="U8"><IntegerDataEncoding sizeInBits="8" encoding="unsigned"/></IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet>
+      <Parameter name="A" parameterTypeRef="U8"/>
+      <Parameter name="BODY" parameterTypeRef="U8"/>
+    </ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Base" abstract="true">
+        <EntryList><ParameterRefEntry parameterRef="A"/></EntryList>
+      </SequenceContainer>
+      <SequenceContainer name="Child">
+        <EntryList><ParameterRefEntry parameterRef="BODY"/></EntryList>
+        <BaseContainer containerRef="Base">
+          <RestrictionCriteria>
+            <BooleanExpression>
+              <ORedConditions>
+                <Condition>
+                  <ParameterInstanceRef parameterRef="A" useCalibratedValue="false"/>
+                  <ComparisonOperator>==</ComparisonOperator>
+                  <Value>1</Value>
+                </Condition>
+                <Condition>
+                  <ParameterInstanceRef parameterRef="A" useCalibratedValue="false"/>
+                  <ComparisonOperator>==</ComparisonOperator>
+                  <Value>2</Value>
+                </Condition>
+              </ORedConditions>
+            </BooleanExpression>
+          </RestrictionCriteria>
+        </BaseContainer>
+      </SequenceContainer>
+    </ContainerSet>"#;
+
+    let message = refusal(layout_of(body));
+    assert!(
+        message.contains("disjunction"),
+        "unexpected refusal: {message}"
+    );
+}
