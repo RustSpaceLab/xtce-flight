@@ -380,6 +380,21 @@ impl Builder {
                     "a float must be 16, 32 or 64 bits wide; no other IEEE-754 format exists",
                 ));
             }
+            // Decoding a MIL-STD-1750A word is many-to-one: a mantissa need not be
+            // normalised and a zero mantissa keeps whatever exponent it had, so a great many
+            // words denote the same number. There is no inverse to write, and an `encode`
+            // whose output its own `decode` does not return is worse than one that says no.
+            //
+            // `xtce-rs` decodes the format. Reading it is well defined; only writing it is
+            // not, which is the same line drawn for a little-endian field that is not a whole
+            // number of bytes.
+            Repr::Mil1750a => {
+                return Err(refuse(
+                    "reading a MIL-STD-1750A word is many-to-one, so there is no inverse to \
+                     write: an unnormalised mantissa and a zero with an exponent both decode \
+                     to numbers this could not put back",
+                ));
+            }
             Repr::Bool => Kind::Bool,
             Repr::Enumerated(variants) => {
                 Kind::Enumerated(self.enumeration(variants, &field.ident, bit_width, container)?)

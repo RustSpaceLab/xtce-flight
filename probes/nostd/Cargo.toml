@@ -16,7 +16,7 @@ path = "src/lib.rs"
 
 [build-dependencies]
 xtce-flight = { path = "../../crates/xtce-flight", default-features = false }
-xtce-model = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "d70a2289603722a0937d916f3f1019010cb51141" }
+xtce-model = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "4ee370c0d6d7ef8bcd3f3ab977ec403ef0ab143d" }
 
 [profile.release]
 opt-level = "z"

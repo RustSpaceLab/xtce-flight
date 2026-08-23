@@ -529,3 +529,37 @@ fn a_little_endian_criterion_is_inverted_when_it_is_planned() {
     assert_eq!(constant.reported, 513);
     assert_eq!(constant.raw, 258);
 }
+
+/// MIL-STD-1750A can be read but not written, so it is refused here.
+///
+/// The format is many-to-one: the standard normalises its mantissa but does not require a
+/// decoder to reject an unnormalised one, and a zero mantissa keeps whatever exponent it had.
+/// So a great many words denote the same number, and `encode` would have to pick one — making
+/// it not the inverse of `decode` for most inputs, in a generator whose whole claim is that
+/// the two are inverses.
+///
+/// `xtce-rs` decodes it, and matches the Python reference doing so. Reading is well defined;
+/// only writing is not.
+#[test]
+fn a_mil_std_1750a_float_is_refused() {
+    let message = refusal(layout_of(&one_field(
+        r#"<FloatParameterType name="FIELD_T">
+        <FloatDataEncoding sizeInBits="32" encoding="MILSTD_1750A"/>
+      </FloatParameterType>"#,
+        0,
+    )));
+    assert!(
+        message.contains("no inverse to write"),
+        "unexpected refusal: {message}"
+    );
+
+    // The control: an IEEE-754 word of the same width compiles.
+    let layout = layout_of(&one_field(
+        r#"<FloatParameterType name="FIELD_T">
+        <FloatDataEncoding sizeInBits="32" encoding="IEEE754"/>
+      </FloatParameterType>"#,
+        0,
+    ))
+    .expect("IEEE-754 compiles");
+    assert_eq!(layout.containers[0].fields[0].kind, Kind::Float32);
+}

@@ -111,6 +111,7 @@ than one that stops, because the gap only shows up in flight.
 |---|---|
 | Integers, 1–64 bits, all three signed codings | Yes |
 | IEEE-754 binary16, binary32, binary64 | Yes |
+| MIL-STD-1750A | Refused — reading it is many-to-one, so there is no inverse to write |
 | Booleans, enumerations (as generated Rust enums) | Yes |
 | Fixed-size text: whole-buffer, terminated, length-prefixed | Yes |
 | Fixed-size binary | Yes |
@@ -174,7 +175,7 @@ Cortex-M at all. The generated code now writes out the same square-and-multiply 
 `powi` performs — verified bit-identical over four million comparisons, and pinned by the
 differential test.
 
-### Three choices worth knowing about
+### Four choices worth knowing about
 
 **Whole-buffer text has to fill its field exactly.** XTCE's un-delimited string *is* its
 buffer, so a shorter value would decode with its padding attached. Requiring the exact length
@@ -185,6 +186,13 @@ keeps `encode` and `decode` inverses; padding, if a mission wants it, is the cal
 a name would be a guess about the mission. A wrong value there produces a packet that is
 byte-perfect and unframeable, so set it deliberately.
 
+**MIL-STD-1750A is read, not written.** `xtce-rs` decodes it and matches the Python reference
+doing so. This generator refuses it, because the format is many-to-one: an unnormalised
+mantissa and a zero that kept its exponent both denote numbers that cannot be put back as the
+bits they came from. `encode` would have to pick a representation and stop being the inverse
+of `decode` for most inputs — which is a claim this README makes and would rather keep. Same
+line as a little-endian field that is not a whole number of bytes.
+
 **binary16 rounds, and does not reject.** A flight computer holding a temperature in `f32`
 should be able to put it in a 16-bit field. Encoding rounds to nearest, ties to even; the
 ground reads back the rounded value. All 63 488 finite binary16 encodings are checked both
@@ -194,7 +202,7 @@ no mission definition in reach has a 16-bit float at all.
 ## Testing
 
 ```console
-$ cargo test --workspace                        # 31 tests, no Python needed
+$ cargo test --workspace                        # 32 tests, no Python needed
 $ ./scripts/check-no-panic.sh                   # the bare-metal gate
 ```
 
