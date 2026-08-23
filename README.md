@@ -123,7 +123,9 @@ than one that stops, because the gap only shows up in flight.
 | `leastSignificantByteFirst`, whole-byte widths | Yes — including a criterion, inverted when the code is generated |
 | `leastSignificantByteFirst`, other widths | Refused — reversing a value narrower than its byte count has no inverse |
 | `DefaultCalibrator`: polynomial and spline | Yes — on the decode side, as an accessor |
-| `ContextCalibrator`, splines above first order | Refused |
+| `ContextCalibratorList` | Yes — an else-if chain over the packet's own fields, resolved when the code is generated |
+| A context criterion on bits a restriction criterion fixes, or on a boolean wider than a bit | Refused — the struct does not carry the value it would compare |
+| Splines above first order | Refused |
 | A width that comes from the packet | Refused — it has no fixed place in a `struct` |
 | An inequality restriction criterion | Refused — it names a set, and an encoder writes one value |
 | A float that is not 16, 32 or 64 bits | Refused — there is no such IEEE-754 format |
