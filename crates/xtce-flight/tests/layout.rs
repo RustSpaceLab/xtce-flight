@@ -4,7 +4,7 @@
 //! next to the smallest definition that provokes it, and a test that has to be read against a
 //! 14 000-line mission file is a test nobody reads.
 
-use xtce_flight::{FlightError, Kind, Options};
+use xtce_flight::{ContextCriterion, ContextTest, FlightError, Kind, Options};
 use xtce_model::XtceDb;
 
 /// Wraps `body` in the smallest space system that will load.
@@ -562,4 +562,200 @@ fn a_mil_std_1750a_float_is_refused() {
     ))
     .expect("IEEE-754 compiles");
     assert_eq!(layout.containers[0].fields[0].kind, Kind::Float32);
+}
+
+/// A context calibrator resolves to the struct's own fields, by where the bits are.
+///
+/// The plan states a criterion as an offset and a width, because the decoder it was written
+/// for reads the packet. An accessor on a decoded struct cannot; it has the fields and
+/// nothing else. So each test is resolved to the field occupying exactly those bits — which
+/// is also the only way the second case here comes out right. SELF's criterion names SELF,
+/// a parameter the container has not decoded when the comparison is made, and what the
+/// reference compares then is the raw value of the field being calibrated: itself.
+#[test]
+fn a_context_calibrator_resolves_to_the_fields_of_the_struct() {
+    let layout = layout_of(
+        r#"    <ParameterTypeSet>
+      <IntegerParameterType name="MODE_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="SENSOR_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned">
+          <ContextCalibratorList>
+            <ContextCalibrator>
+              <ContextMatch>
+                <Comparison parameterRef="MODE" value="1" useCalibratedValue="false"/>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator><Term coefficient="0.5" exponent="1"/></PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+            <ContextCalibrator>
+              <ContextMatch>
+                <Comparison parameterRef="SENSOR" value="7" comparisonOperator="&gt;"
+                            useCalibratedValue="false"/>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator><Term coefficient="2.0" exponent="1"/></PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+          </ContextCalibratorList>
+          <DefaultCalibrator>
+            <PolynomialCalibrator><Term coefficient="1.0" exponent="1"/></PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet>
+      <Parameter name="MODE" parameterTypeRef="MODE_T"/>
+      <Parameter name="SENSOR" parameterTypeRef="SENSOR_T"/>
+    </ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Only">
+        <EntryList>
+          <ParameterRefEntry parameterRef="MODE"/>
+          <ParameterRefEntry parameterRef="SENSOR"/>
+        </EntryList>
+      </SequenceContainer>
+    </ContainerSet>"#,
+    )
+    .expect("compiles");
+
+    let sensor = &layout.containers[0].fields[1];
+    assert_eq!(sensor.ident, "sensor");
+    assert!(
+        sensor.calibration.is_some(),
+        "the default calibrator is the fallback, and a list without one is refused upstream"
+    );
+    assert_eq!(sensor.contexts.len(), 2, "tried in order, then the default");
+
+    let tests: Vec<&ContextTest> = sensor
+        .contexts
+        .iter()
+        .map(|context| match &context.criteria {
+            ContextCriterion::Test(test) => test,
+            other => panic!("expected one comparison, got {other:?}"),
+        })
+        .collect();
+
+    assert_eq!(
+        tests[0].ident, "mode",
+        "a preceding field, by name and bits"
+    );
+    assert_eq!(tests[0].value, 1);
+    // The definition says SENSOR, and SENSOR is what it gets: the field being calibrated.
+    assert_eq!(tests[1].ident, "sensor");
+    assert_eq!(tests[1].xtce_name, "SENSOR");
+    assert_eq!(tests[1].value, 7);
+}
+
+/// A criterion on bits the restriction criteria fix is refused, not quietly ignored.
+///
+/// Those bits are not a field: they are what makes the packet recognisable, so the encoder
+/// writes them and the struct does not carry them. The accessor therefore has nothing to
+/// compare, and falling back to the default calibrator would report a number that is wrong
+/// in the one way nothing downstream can catch.
+#[test]
+fn a_context_criterion_on_a_restriction_criterion_is_refused() {
+    let error = refusal(layout_of(
+        r#"    <ParameterTypeSet>
+      <IntegerParameterType name="APID_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="SENSOR_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned">
+          <ContextCalibratorList>
+            <ContextCalibrator>
+              <ContextMatch>
+                <Comparison parameterRef="APID" value="9" useCalibratedValue="false"/>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator><Term coefficient="0.5" exponent="1"/></PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+          </ContextCalibratorList>
+          <DefaultCalibrator>
+            <PolynomialCalibrator><Term coefficient="1.0" exponent="1"/></PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet>
+      <Parameter name="APID" parameterTypeRef="APID_T"/>
+      <Parameter name="SENSOR" parameterTypeRef="SENSOR_T"/>
+    </ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Base" abstract="true">
+        <EntryList>
+          <ParameterRefEntry parameterRef="APID"/>
+        </EntryList>
+      </SequenceContainer>
+      <SequenceContainer name="Only">
+        <EntryList>
+          <ParameterRefEntry parameterRef="SENSOR"/>
+        </EntryList>
+        <BaseContainer containerRef="Base">
+          <RestrictionCriteria>
+            <Comparison parameterRef="APID" value="9" useCalibratedValue="false"/>
+          </RestrictionCriteria>
+        </BaseContainer>
+      </SequenceContainer>
+    </ContainerSet>"#,
+    ));
+
+    assert!(
+        error.contains("ContextCalibrator") && error.contains("does not carry"),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// A boolean wider than one bit keeps no raw value for a criterion to compare.
+///
+/// The struct holds `bool`, and `decode` sets it from whether the bits were nonzero. For one
+/// bit that is lossless and the comparison is exact. For more, the value the criterion means
+/// — the bits themselves — is gone by the time an accessor could look, and a comparison
+/// against 0 or 1 would answer differently from the interpreter on the packets that differ.
+#[test]
+fn a_context_criterion_on_a_wide_boolean_is_refused() {
+    let error = refusal(layout_of(
+        r#"    <ParameterTypeSet>
+      <BooleanParameterType name="FLAG_T" oneStringValue="TRUE" zeroStringValue="FALSE">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </BooleanParameterType>
+      <IntegerParameterType name="SENSOR_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned">
+          <ContextCalibratorList>
+            <ContextCalibrator>
+              <ContextMatch>
+                <Comparison parameterRef="FLAG" value="3" useCalibratedValue="false"/>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator><Term coefficient="0.5" exponent="1"/></PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+          </ContextCalibratorList>
+          <DefaultCalibrator>
+            <PolynomialCalibrator><Term coefficient="1.0" exponent="1"/></PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet>
+      <Parameter name="FLAG" parameterTypeRef="FLAG_T"/>
+      <Parameter name="SENSOR" parameterTypeRef="SENSOR_T"/>
+    </ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Only">
+        <EntryList>
+          <ParameterRefEntry parameterRef="FLAG"/>
+          <ParameterRefEntry parameterRef="SENSOR"/>
+        </EntryList>
+      </SequenceContainer>
+    </ContainerSet>"#,
+    ));
+
+    assert!(
+        error.contains("boolean wider than one bit"),
+        "unexpected refusal: {error}"
+    );
 }

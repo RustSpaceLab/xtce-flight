@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use xtce_codegen::plan::{TextCharset, TextDelimiter};
+use xtce_codegen::plan::{ContextCalibration, TextCharset, TextDelimiter};
 use xtce_codegen::{Calibration, ContainerPlan, Criterion, Field, Guard, Node, Plan, Repr};
 use xtce_model::CompareOp;
 use xtce_model::types::IntegerCoding;
@@ -76,6 +76,57 @@ pub struct FlightField {
     /// ground's job. What it adds here is a decode-side accessor, so a flight computer
     /// reading a telecommand — or a test — can apply the same conversion the ground will.
     pub calibration: Option<Calibration>,
+    /// Calibrators tried in order before [`Self::calibration`], each with what selects it.
+    ///
+    /// Empty unless the definition gives the field a `<ContextCalibratorList>`. When it is
+    /// not, `calibration` is the fallback and is always present — the plan refuses a list
+    /// with no default.
+    pub contexts: Vec<FlightContext>,
+}
+
+/// One calibrator that applies only when the packet says so.
+#[derive(Clone, Debug)]
+pub struct FlightContext {
+    /// What has to hold for [`Self::calibration`] to be the one.
+    pub criteria: ContextCriterion,
+    /// The calibrator that applies when it does.
+    pub calibration: Calibration,
+}
+
+/// A context calibrator's criteria, resolved to the struct's own fields.
+///
+/// The plan states a criterion as bits — an offset, a width and how to read them — because
+/// the decoder it was written for has the packet in front of it. The accessor here does not:
+/// it is a method on a decoded struct, and the only values in reach are that struct's fields.
+/// So each test is resolved to the field occupying exactly those bits, which is also what
+/// makes the awkward case come out right. A criterion naming a parameter that is decoded
+/// *after* the field being calibrated resolves, in the plan, to the calibrated field's own
+/// bits; matching on geometry follows it there, where matching on the parameter's name would
+/// quietly compare the wrong field.
+#[derive(Clone, Debug)]
+pub enum ContextCriterion {
+    /// One field against one literal.
+    Test(ContextTest),
+    /// Every child holds.
+    All(Vec<ContextCriterion>),
+    /// Some child holds.
+    Any(Vec<ContextCriterion>),
+}
+
+/// One comparison inside a [`ContextCriterion`].
+#[derive(Clone, Debug)]
+pub struct ContextTest {
+    /// The struct field holding the value to compare.
+    ///
+    /// Always of a type `i128::from` accepts, and always one whose value is the raw number
+    /// the criterion means: an integer, or a single-bit `bool`, and nothing else.
+    pub ident: String,
+    /// Name as the definition writes it, for the generated comment.
+    pub xtce_name: String,
+    /// The operator.
+    pub operator: CompareOp,
+    /// The literal, as the plan read it.
+    pub value: i128,
 }
 
 /// A restriction criterion, as bits the encoder writes.
@@ -258,22 +309,42 @@ impl Builder {
             {
                 continue;
             }
-            fields.push(self.field(field, &plan.xtce_name)?);
+            fields.push((self.field(field, &plan.xtce_name)?, &field.contexts));
         }
 
         // Two entries may name the same parameter — a container that repeats one, or an
         // inherited entry re-listed. The decoder collapses them; a struct cannot have the
         // field twice, so the last one wins, matching what a reader of the packet sees.
         let mut seen: HashMap<String, usize> = HashMap::new();
-        let mut deduplicated: Vec<FlightField> = Vec::new();
+        let mut deduplicated: Vec<(FlightField, &Vec<ContextCalibration>)> = Vec::new();
         for field in fields {
-            if let Some(&at) = seen.get(&field.ident) {
+            if let Some(&at) = seen.get(&field.0.ident) {
                 deduplicated[at] = field;
             } else {
-                seen.insert(field.ident.clone(), deduplicated.len());
+                seen.insert(field.0.ident.clone(), deduplicated.len());
                 deduplicated.push(field);
             }
         }
+
+        // Context calibrators are resolved once the struct's fields are settled, because a
+        // criterion may test the very field it selects a calibrator for and that field is
+        // not in the list until now.
+        let spots: HashMap<(usize, u32), (String, Kind, bool)> = deduplicated
+            .iter()
+            .map(|(field, _)| {
+                (
+                    (field.bit_offset, field.bit_width),
+                    (field.ident.clone(), field.kind.clone(), field.swap_bytes),
+                )
+            })
+            .collect();
+        let deduplicated = deduplicated
+            .into_iter()
+            .map(|(mut field, contexts)| {
+                field.contexts = Self::contexts(contexts, &spots, &plan.xtce_name)?;
+                Ok(field)
+            })
+            .collect::<Result<Vec<FlightField>, FlightError>>()?;
 
         Ok(Container {
             type_ident: unique(&mut self.taken, type_ident(&plan.xtce_name)),
@@ -342,6 +413,116 @@ impl Builder {
             bit_width: guard.bit_width,
             raw,
             reported,
+        })
+    }
+
+    /// Resolves a field's context calibrators against the fields the struct ended up with.
+    ///
+    /// `spots` maps a span of bits to the field occupying exactly it. A criterion the struct
+    /// cannot evaluate is refused here rather than dropped: silently falling back to the
+    /// default calibrator would report a number that is wrong in a way nothing else catches.
+    fn contexts(
+        list: &[ContextCalibration],
+        spots: &HashMap<(usize, u32), (String, Kind, bool)>,
+        container: &str,
+    ) -> Result<Vec<FlightContext>, FlightError> {
+        list.iter()
+            .map(|context| {
+                Ok(FlightContext {
+                    criteria: Self::context_criterion(&context.criteria, spots, container)?,
+                    calibration: context.calibration.clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn context_criterion(
+        criterion: &Criterion,
+        spots: &HashMap<(usize, u32), (String, Kind, bool)>,
+        container: &str,
+    ) -> Result<ContextCriterion, FlightError> {
+        let children = |list: &[Criterion]| {
+            list.iter()
+                .map(|child| Self::context_criterion(child, spots, container))
+                .collect::<Result<Vec<_>, _>>()
+        };
+        match criterion {
+            Criterion::Test(guard) => Ok(ContextCriterion::Test(Self::context_test(
+                guard, spots, container,
+            )?)),
+            Criterion::All(list) => Ok(ContextCriterion::All(children(list)?)),
+            Criterion::Any(list) => Ok(ContextCriterion::Any(children(list)?)),
+        }
+    }
+
+    fn context_test(
+        guard: &Guard,
+        spots: &HashMap<(usize, u32), (String, Kind, bool)>,
+        container: &str,
+    ) -> Result<ContextTest, FlightError> {
+        let refuse = |reason: &'static str| FlightError::Unsupported {
+            element: "ContextCalibrator".to_owned(),
+            container: container.to_owned(),
+            reason,
+        };
+
+        // By geometry, not by name: the plan resolves a criterion naming a parameter that is
+        // not decoded yet to the calibrated field's own bits, and the name it kept is the one
+        // the definition wrote. Following the name instead would compare a different field.
+        let Some((ident, kind, swap_bytes)) = spots.get(&(guard.bit_offset, guard.bit_width))
+        else {
+            return Err(refuse(
+                "a context calibrator's criterion tests bits this container does not carry \
+                 as a field of the struct, so the accessor has nothing to compare: a \
+                 parameter the restriction criteria fix is written as a constant, and is not \
+                 the caller's to set",
+            ));
+        };
+
+        // The struct holds the value after the reversal, which is what a criterion compares.
+        // The two disagreeing would mean the plan read one span two ways.
+        if *swap_bytes != guard.swap_bytes {
+            return Err(refuse(
+                "a context calibrator's criterion and the field it tests disagree about byte \
+                 order",
+            ));
+        }
+
+        match kind {
+            Kind::Unsigned | Kind::Signed(_) => {}
+            // A single bit is a `bool` without loss: the value is the bit. A wider boolean
+            // field is not — the struct keeps whether the bits were nonzero, not which they
+            // were, and a criterion tests the bits.
+            Kind::Bool if guard.bit_width == 1 => {}
+            Kind::Bool => {
+                return Err(refuse(
+                    "a context calibrator's criterion tests a boolean wider than one bit, \
+                     whose raw value the struct does not keep",
+                ));
+            }
+            // A criterion's literal is an integer — the plan reads it as one — and there is
+            // no comparison to write against a string, a blob, or a float whose nearest
+            // representable value is not the number the definition spelled. An enumeration
+            // does not reach here either: the plan compiles a criterion only on a field that
+            // is an integer or a boolean, and this is the backstop for that.
+            Kind::Enumerated(_)
+            | Kind::Float16
+            | Kind::Float32
+            | Kind::Float64
+            | Kind::Text { .. }
+            | Kind::Binary => {
+                return Err(refuse(
+                    "a context calibrator's criterion compares an integer, and this one \
+                     tests a field that is not one",
+                ));
+            }
+        }
+
+        Ok(ContextTest {
+            ident: ident.clone(),
+            xtce_name: guard.xtce_name.clone(),
+            operator: guard.operator,
+            value: guard.value,
         })
     }
 
@@ -436,6 +617,8 @@ impl Builder {
             kind,
             swap_bytes: field.swap_bytes,
             calibration: field.calibration.clone(),
+            // Filled in by `contexts`, once every field of this container is known.
+            contexts: Vec::new(),
         })
     }
 

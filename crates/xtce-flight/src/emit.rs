@@ -19,11 +19,15 @@ use std::collections::BTreeSet;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 use xtce_codegen::plan::{TextCharset, TextDelimiter};
+use xtce_model::CompareOp;
 use xtce_model::types::IntegerCoding;
 
 use xtce_codegen::Calibration;
 
-use crate::layout::{Container, EnumType, FlightField, Kind, Layout, mask_for, natural_bits};
+use crate::layout::{
+    Container, ContextCriterion, ContextTest, EnumType, FlightField, Kind, Layout, mask_for,
+    natural_bits,
+};
 
 /// Renders the whole module.
 pub fn module(layout: &Layout, source: &str) -> String {
@@ -243,6 +247,53 @@ fn container(container: &Container, enums: &[EnumType]) -> TokenStream {
 fn calibrated_accessor(field: &FlightField) -> Option<TokenStream> {
     let calibration = field.calibration.as_ref()?;
     let name = format_ident!("{}_calibrated", field.ident.trim_end_matches('_'));
+    let xtce_name = &field.xtce_name;
+
+    // The default is the last arm; the contexts go in front of it in definition order, so
+    // the first one whose criteria hold is the one that applies.
+    let mut body = apply_calibration(field, calibration);
+    if !field.contexts.is_empty() {
+        // Built from the back so the chain renders as `else if`, rather than as a block per
+        // context nested inside the one before it.
+        body = quote! { { #body } };
+        for context in field.contexts.iter().rev() {
+            let condition = context_condition(&context.criteria);
+            let applied = apply_calibration(field, &context.calibration);
+            body = quote! { if #condition { #applied } else #body };
+        }
+    }
+
+    let contexts_doc = if field.contexts.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " The definition gives it {} context calibrator(s) as well as a default; they are \
+             tried in order, against this packet's own fields, and the first whose criteria \
+             hold is the one applied.",
+            field.contexts.len()
+        )
+    };
+    let doc = format!(
+        " `{xtce_name}` in engineering units, by the calibrator the definition gives it.\n\n          The struct field holds the raw value the packet carries; this is what the ground \
+         reads. Encoding is unaffected — the calibrator is not inverted, because a \
+         spacecraft produces counts.{contexts_doc}"
+    );
+
+    Some(quote! {
+        #[doc = #doc]
+        ///
+        /// # Errors
+        ///
+        /// [`DecodeError::Calibration`] if a spline is asked for a value outside its points
+        /// and the definition does not allow extrapolation. A polynomial never fails.
+        pub fn #name(&self) -> Result<f64, DecodeError> {
+            #body
+        }
+    })
+}
+
+/// One calibrator applied to a field's raw value, as an expression of type `Result<f64, _>`.
+fn apply_calibration(field: &FlightField, calibration: &Calibration) -> TokenStream {
     let raw = {
         let ident = ident(&field.ident);
         quote!(self.#ident)
@@ -250,7 +301,7 @@ fn calibrated_accessor(field: &FlightField) -> Option<TokenStream> {
     let xtce_name = &field.xtce_name;
     let integral = matches!(field.kind, Kind::Unsigned | Kind::Signed(_));
 
-    let body = match calibration {
+    match calibration {
         Calibration::Polynomial(terms) => {
             let accumulate = terms.iter().map(|term| {
                 let coefficient = Literal::f64_unsuffixed(term.coefficient);
@@ -294,25 +345,63 @@ fn calibrated_accessor(field: &FlightField) -> Option<TokenStream> {
                 }
             }
         }
-    };
+    }
+}
 
-    let doc = format!(
-        " `{xtce_name}` in engineering units, by the calibrator the definition gives it.\n\n          The struct field holds the raw value the packet carries; this is what the ground \
-         reads. Encoding is unaffected — the calibrator is not inverted, because a \
-         spacecraft produces counts."
-    );
-
-    Some(quote! {
-        #[doc = #doc]
-        ///
-        /// # Errors
-        ///
-        /// [`DecodeError::Calibration`] if a spline is asked for a value outside its points
-        /// and the definition does not allow extrapolation. A polynomial never fails.
-        pub fn #name(&self) -> Result<f64, DecodeError> {
-            #body
+/// Whether a context calibrator's criteria hold, as an expression of type `bool`.
+///
+/// Each test reads a field of this same struct — the plan has already resolved which — so
+/// nothing here touches the packet. That is deliberate: the buffer is gone by the time an
+/// accessor runs, and the values it carried are exactly the struct's fields.
+fn context_condition(criterion: &ContextCriterion) -> TokenStream {
+    match criterion {
+        ContextCriterion::Test(test) => context_test(test),
+        // An empty conjunction is true and an empty disjunction is false, which is what the
+        // interpreter computes and what `all([])` and `any([])` mean.
+        ContextCriterion::All(children) => {
+            if children.is_empty() {
+                return quote!(true);
+            }
+            let parts = children.iter().map(context_condition);
+            quote! { #(#parts)&&* }
         }
-    })
+        ContextCriterion::Any(children) => {
+            if children.is_empty() {
+                return quote!(false);
+            }
+            let parts = children.iter().map(context_condition);
+            quote! { (#(#parts)||*) }
+        }
+    }
+}
+
+/// One comparison, in `i128` so that the field's own width and signedness cannot change the
+/// answer.
+///
+/// The plan reads a criterion's literal as an `i128` because the parameter it tests may be
+/// signed, and a literal outside the field's range is not an error — it is a comparison with
+/// one answer for every packet. Widening both sides gives that answer without a special case,
+/// and the constant folds away.
+fn context_test(test: &ContextTest) -> TokenStream {
+    let field = ident(&test.ident);
+    // `i128::from` accepts every type the field can have here — the layout only resolves a
+    // test to an integer field or a one-bit `bool`, and `From<bool>` gives the bit itself.
+    let value = quote!(i128::from(self.#field));
+    let literal = Literal::i128_unsuffixed(test.value);
+    let operator = compare_op(test.operator);
+    quote! { #value #operator #literal }
+}
+
+/// A comparison operator as Rust spells it.
+fn compare_op(operator: CompareOp) -> TokenStream {
+    match operator {
+        CompareOp::Equal => quote!(==),
+        CompareOp::NotEqual => quote!(!=),
+        CompareOp::Less => quote!(<),
+        CompareOp::LessOrEqual => quote!(<=),
+        CompareOp::Greater => quote!(>),
+        CompareOp::GreaterOrEqual => quote!(>=),
+    }
 }
 
 /// The Rust type a field's value has in the struct.
@@ -1220,20 +1309,28 @@ fn helpers(layout: &Layout) -> TokenStream {
                 }
                 _ => {}
             }
-            match (&field.calibration, &field.kind) {
-                // The exact-power helper is only reachable from an integral encoding; a
-                // float raw uses `powi` inline.
-                (Some(Calibration::Polynomial(_)), Kind::Unsigned | Kind::Signed(_)) => {
-                    needs.insert("power");
-                    needs.insert("powi");
+            // Every calibrator the field can apply, not only its default: a spline reachable
+            // solely through a context calibrator still needs `spline_value` written. The
+            // integral-or-float split keys off the field's encoding, which all of them share.
+            let calibrations = field
+                .calibration
+                .iter()
+                .chain(field.contexts.iter().map(|context| &context.calibration));
+            for calibration in calibrations {
+                match (calibration, &field.kind) {
+                    // The exact-power helper is only reachable from an integral encoding; a
+                    // float raw uses `powi` inline.
+                    (Calibration::Polynomial(_), Kind::Unsigned | Kind::Signed(_)) => {
+                        needs.insert("power");
+                        needs.insert("powi");
+                    }
+                    (Calibration::Polynomial(_), _) => {
+                        needs.insert("powi");
+                    }
+                    (Calibration::Spline(_), _) => {
+                        needs.insert("spline");
+                    }
                 }
-                (Some(Calibration::Polynomial(_)), _) => {
-                    needs.insert("powi");
-                }
-                (Some(Calibration::Spline(_)), _) => {
-                    needs.insert("spline");
-                }
-                _ => {}
             }
         }
     }

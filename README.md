@@ -61,10 +61,10 @@ check folds away. The script then reads the IR and fails if any reference to the
 machinery survived. It also fails if the probe's own functions are *absent* from the IR, so
 it cannot pass by having optimised away the code it is meant to inspect.
 
-Current result, on the seven definitions the probe compiles:
+Current result, on the eight definitions the probe compiles:
 
 ```
-no panic path in 9008 lines of IR for thumbv7em-none-eabihf
+no panic path in 10038 lines of IR for thumbv7em-none-eabihf
 ```
 
 ## How correctness is argued
@@ -160,6 +160,21 @@ It is a method rather than a stored field on purpose: storing it would cost eigh
 RAM per calibrated parameter on the part least able to spare them, to hold a number the
 flight side usually never looks at.
 
+A parameter may have several calibrators and let the packet choose — a
+`<ContextCalibratorList>`, tried in order, with the default behind them. The accessor is then
+an else-if chain over the *struct's own fields*, and which field each criterion reads is
+decided when the code is generated. That resolution has one corner worth knowing about: a
+criterion is compared against what the container has decoded so far, so one naming a
+parameter that comes *later* in the same container does not read that parameter at all — it
+reads the raw value of the field being calibrated. Surprising, agreed on by the reference
+implementation and both generators here, and pinned by a test that drives it deliberately
+rather than hoping a seed lands on it.
+
+Two criteria are refused rather than guessed at: one testing bits the restriction criteria
+fix, because those are not a field of the struct and there is nothing to compare; and one
+testing a boolean wider than a single bit, because `decode` keeps whether the bits were
+nonzero and a criterion means the bits.
+
 The arithmetic is `xtce-decode`'s, line for line, and checked against it on `to_bits()`.
 That is not pedantry. Floating-point addition is neither associative nor commutative, so
 summing a polynomial by Horner's method — or sorted by exponent, or in any order but the
@@ -225,12 +240,13 @@ tested without putting them in the repository.
 | `testdata/flight_shapes.xml` | purpose-built: inheritance, enumerations whose labels are not Rust identifiers, and all three ways XTCE delimits a string |
 | `testdata/calibrated.xml` | purpose-built: polynomials over both an integer and a float encoding, a negative exponent, and splines of both orders |
 | `testdata/calibrated_bounded.xml` | purpose-built: one spline that may not extrapolate, so the refusal can be driven on both sides of every boundary |
+| `testdata/context_calibrated.xml` | purpose-built: several calibrators for one parameter, chosen by the packet — including a criterion on the field being calibrated, and one on a parameter decoded after it |
 | `testdata/contrived_inheritance_structure.xml` | a real mission definition whose container is selected by a `<BooleanExpression>` rather than a `<ComparisonList>` |
 | `testdata/byte_order.xml` | purpose-built: little-endian fields of every whole-byte width, aligned and not, and a little-endian criterion |
 | `testdata/arrays.xml` | purpose-built: arrays of one and two dimensions, a subset of one, and six four-bit elements that keep everything after them off a byte boundary |
 | `testdata/aggregates.xml` | purpose-built: an aggregate, an array of them, one holding an array, and a four-bit member that ends it off a byte boundary |
 
-Seven of the nine are written rather than found, and deliberately so. Mission files are the
+Eight of the ten are written rather than found, and deliberately so. Mission files are the
 right thing to validate against, but between them they reach almost none of an encoder's
 edges: no label that needs sanitising, no terminated string, no float at an offset that makes
 it span an extra byte, and **no calibrator anywhere at all**. Two bugs in this repository
@@ -249,7 +265,7 @@ crates/xtce-flight        the generator, and the `xtce-flight` command
 crates/xtce-flight-e2e    generated code and harness, against the interpreter
 probes/nostd              the bare-metal build, and what the panic check reads
 scripts/check-no-panic.sh the panic check
-testdata/                 three definitions, one of them real
+testdata/                 ten definitions, two of them real
 ```
 
 ## Licence

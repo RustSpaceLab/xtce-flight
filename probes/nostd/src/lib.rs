@@ -39,6 +39,11 @@ pub mod calibrated {
 }
 
 #[allow(dead_code, clippy::all, clippy::pedantic)]
+pub mod context_calibrated {
+    include!(concat!(env!("OUT_DIR"), "/context_calibrated.rs"));
+}
+
+#[allow(dead_code, clippy::all, clippy::pedantic)]
 pub mod byte_order {
     include!(concat!(env!("OUT_DIR"), "/byte_order.rs"));
 }
@@ -175,6 +180,33 @@ pub fn calibrate_all(data: &[u8]) -> f64 {
         packet.poly_s16_calibrated(),
         packet.spl0_u8_calibrated(),
         packet.spl1_u8_calibrated(),
+    ] {
+        match value {
+            Ok(value) => sum += value,
+            Err(_) => return f64::NAN,
+        }
+    }
+    sum
+}
+
+/// Applies the calibrators a packet chooses between.
+///
+/// Here for the same reason as `calibrate_all`, and for one more: a context calibrator is an
+/// else-if chain over other fields of the same packet, so it is the only calibration path
+/// with a branch in it. A branch is where a bounds check would hide.
+#[inline(never)]
+#[must_use]
+pub fn calibrate_in_context(data: &[u8]) -> f64 {
+    let Ok(packet) = context_calibrated::Telemetry::decode(data) else {
+        return f64::NAN;
+    };
+    let mut sum = 0.0;
+    for value in [
+        packet.sensor_calibrated(),
+        packet.armed_calibrated(),
+        packet.self_calibrated(),
+        packet.lookahead_calibrated(),
+        packet.spline_ctx_calibrated(),
     ] {
         match value {
             Ok(value) => sum += value,

@@ -16,6 +16,9 @@ const CASES: &[(&str, &str, Option<&str>)] = &[
     // Purpose-built. Calibrators, which no mission definition in reach has at all.
     ("calibrated", "calibrated.xml", None),
     ("calibrated_bounded", "calibrated_bounded.xml", None),
+    // Purpose-built. Context calibrators: several calibrators for one parameter, chosen by
+    // what the rest of the packet says.
+    ("context_calibrated", "context_calibrated.xml", None),
     // Purpose-built. `leastSignificantByteFirst`, which an encoder has to invert rather than
     // merely apply.
     ("byte_order", "byte_order.xml", None),

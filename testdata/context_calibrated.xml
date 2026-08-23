@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Written for this project. A `<ContextCalibratorList>` gives a parameter several calibrators
+  and picks between them by what the rest of the packet says; the list is tried in order and
+  the first entry whose criteria all hold wins, with the default behind them.
+
+  None of that changes encoding — a spacecraft has an ADC count either way — so what this
+  file exercises is the decode-side accessor, against `xtce-decode`'s own calibration.
+
+  A criterion is resolved positionally: it names a parameter, and what it compares is that
+  parameter if the container has already decoded one, and otherwise the raw value of the
+  field being calibrated. So there are three shapes here and they are not the same shape:
+
+  * SENSOR's contexts name MODE, which precedes it. The ordinary case.
+  * SELF's context names SELF. Not decoded yet, so it compares SELF's own raw value.
+  * LOOKAHEAD's context names LATER, which this container decodes *after* it. Also not
+    decoded yet, so it too compares LOOKAHEAD's own raw value — not LATER's. That is
+    surprising, and it is what both implementations do.
+
+  ARMED's context is a conjunction rather than a single comparison, and one half of it names
+  SENSOR — a parameter that is itself calibrated, compared by its raw value. SPLINE_CTX's is
+  a conjunction too, half of it a boolean, and it selects a spline rather than a polynomial.
+
+  The fields the criteria test are deliberately narrow. The harness invents a uniformly
+  random value for every field, and `MODE == 1` over eight bits would hold in one packet in
+  256: the default branch would be checked thousands of times and the contexts twice. MODE is
+  two bits, so each of its four values comes up a quarter of the time; LOOKAHEAD is four bits,
+  so `== 5` holds one packet in sixteen; and SELF's threshold sits mid-range for a twelve-bit
+  field rather than near its floor. The test asserts every branch was taken.
+
+  FLAGS is an enumeration nothing tests, and PLAIN an uncalibrated field: the controls, so a
+  generator that calibrated everything or tripped over a field it could not compare is
+  caught.
+-->
+<SpaceSystem xmlns="http://www.omg.org/spec/XTCE/20180204" name="ContextCalibrated">
+  <TelemetryMetaData>
+    <ParameterTypeSet>
+      <IntegerParameterType name="U2">
+        <IntegerDataEncoding sizeInBits="2" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U3">
+        <IntegerDataEncoding sizeInBits="3" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U4">
+        <IntegerDataEncoding sizeInBits="4" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="U8">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>
+
+      <BooleanParameterType name="B1" oneStringValue="TRUE" zeroStringValue="FALSE">
+        <IntegerDataEncoding sizeInBits="1" encoding="unsigned"/>
+      </BooleanParameterType>
+
+      <EnumeratedParameterType name="FLAGS_T">
+        <IntegerDataEncoding sizeInBits="2" encoding="unsigned"/>
+        <EnumerationList>
+          <Enumeration value="0" label="IDLE"/>
+          <Enumeration value="1" label="ARMED"/>
+          <Enumeration value="2" label="FIRING"/>
+          <Enumeration value="3" label="SAFE"/>
+        </EnumerationList>
+      </EnumeratedParameterType>
+
+      <!-- Two contexts on a preceding field, and a default behind them. -->
+      <IntegerParameterType name="SENSOR_T">
+        <IntegerDataEncoding sizeInBits="16" encoding="unsigned">
+          <ContextCalibratorList>
+            <ContextCalibrator>
+              <ContextMatch>
+                <Comparison parameterRef="MODE" value="1" useCalibratedValue="false"/>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator>
+                  <Term coefficient="0.5" exponent="1"/>
+                  <Term coefficient="12.25" exponent="0"/>
+                </PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+            <ContextCalibrator>
+              <ContextMatch>
+                <Comparison parameterRef="MODE" value="2" useCalibratedValue="false"/>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator>
+                  <Term coefficient="-2.0" exponent="1"/>
+                </PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+          </ContextCalibratorList>
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="1.0" exponent="1"/>
+              <Term coefficient="100.0" exponent="0"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <!-- A conjunction, half of it on a parameter that is itself calibrated. -->
+      <IntegerParameterType name="ARMED_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned">
+          <ContextCalibratorList>
+            <ContextCalibrator>
+              <ContextMatch>
+                <ComparisonList>
+                  <Comparison parameterRef="MODE" value="2" comparisonOperator="&lt;"
+                              useCalibratedValue="false"/>
+                  <Comparison parameterRef="SENSOR" value="30000" comparisonOperator="&gt;"
+                              useCalibratedValue="false"/>
+                </ComparisonList>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator>
+                  <Term coefficient="4.0" exponent="1"/>
+                </PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+          </ContextCalibratorList>
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="-1.0" exponent="1"/>
+              <Term coefficient="7.5" exponent="0"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <!-- A criterion on the value being calibrated. -->
+      <IntegerParameterType name="SELF_T">
+        <IntegerDataEncoding sizeInBits="12" encoding="unsigned">
+          <ContextCalibratorList>
+            <ContextCalibrator>
+              <ContextMatch>
+                <Comparison parameterRef="SELF" value="2048" comparisonOperator="&gt;"
+                            useCalibratedValue="false"/>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator>
+                  <Term coefficient="0.001" exponent="1"/>
+                </PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+          </ContextCalibratorList>
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="1.0" exponent="1"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <!-- A criterion naming a parameter decoded later, which resolves to this one's raw. -->
+      <IntegerParameterType name="LOOKAHEAD_T">
+        <IntegerDataEncoding sizeInBits="4" encoding="unsigned">
+          <ContextCalibratorList>
+            <ContextCalibrator>
+              <ContextMatch>
+                <Comparison parameterRef="LATER" value="5" useCalibratedValue="false"/>
+              </ContextMatch>
+              <Calibrator>
+                <PolynomialCalibrator>
+                  <Term coefficient="7.0" exponent="0"/>
+                </PolynomialCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+          </ContextCalibratorList>
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="1.0" exponent="1"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+
+      <!-- A context whose calibrator is a spline, selected partly by a boolean. -->
+      <IntegerParameterType name="SPLINE_CTX_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned">
+          <ContextCalibratorList>
+            <ContextCalibrator>
+              <ContextMatch>
+                <ComparisonList>
+                  <Comparison parameterRef="MODE" value="3" useCalibratedValue="false"/>
+                  <Comparison parameterRef="VALID" value="1" useCalibratedValue="false"/>
+                </ComparisonList>
+              </ContextMatch>
+              <Calibrator>
+                <SplineCalibrator order="1" extrapolate="true">
+                  <SplinePoint raw="0" calibrated="-40.0"/>
+                  <SplinePoint raw="128" calibrated="0.0"/>
+                  <SplinePoint raw="255" calibrated="85.5"/>
+                </SplineCalibrator>
+              </Calibrator>
+            </ContextCalibrator>
+          </ContextCalibratorList>
+          <DefaultCalibrator>
+            <PolynomialCalibrator>
+              <Term coefficient="0.25" exponent="1"/>
+            </PolynomialCalibrator>
+          </DefaultCalibrator>
+        </IntegerDataEncoding>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+
+    <ParameterSet>
+      <Parameter name="MODE" parameterTypeRef="U2"/>
+      <Parameter name="FLAGS" parameterTypeRef="FLAGS_T"/>
+      <Parameter name="VALID" parameterTypeRef="B1"/>
+      <Parameter name="SPARE_3" parameterTypeRef="U3"/>
+      <Parameter name="SENSOR" parameterTypeRef="SENSOR_T"/>
+      <Parameter name="ARMED" parameterTypeRef="ARMED_T"/>
+      <Parameter name="SELF" parameterTypeRef="SELF_T"/>
+      <Parameter name="LOOKAHEAD" parameterTypeRef="LOOKAHEAD_T"/>
+      <Parameter name="SPLINE_CTX" parameterTypeRef="SPLINE_CTX_T"/>
+      <Parameter name="LATER" parameterTypeRef="U8"/>
+      <Parameter name="PLAIN" parameterTypeRef="U8"/>
+    </ParameterSet>
+
+    <ContainerSet>
+      <SequenceContainer name="Telemetry">
+        <EntryList>
+          <ParameterRefEntry parameterRef="MODE"/>
+          <ParameterRefEntry parameterRef="FLAGS"/>
+          <!-- SELF is twelve bits and LOOKAHEAD four; this keeps the container whole bytes. -->
+          <ParameterRefEntry parameterRef="VALID"/>
+          <ParameterRefEntry parameterRef="SPARE_3"/>
+          <ParameterRefEntry parameterRef="SENSOR"/>
+          <ParameterRefEntry parameterRef="ARMED"/>
+          <ParameterRefEntry parameterRef="SELF"/>
+          <ParameterRefEntry parameterRef="LOOKAHEAD"/>
+          <ParameterRefEntry parameterRef="SPLINE_CTX"/>
+          <ParameterRefEntry parameterRef="LATER"/>
+          <ParameterRefEntry parameterRef="PLAIN"/>
+        </EntryList>
+      </SequenceContainer>
+    </ContainerSet>
+  </TelemetryMetaData>
+</SpaceSystem>

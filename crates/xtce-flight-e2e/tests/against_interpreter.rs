@@ -41,6 +41,7 @@ case!(flight_shapes, "flight_shapes");
 case!(jpss, "jpss");
 case!(calibrated, "calibrated");
 case!(calibrated_bounded, "calibrated_bounded");
+case!(context_calibrated, "context_calibrated");
 case!(contrived, "contrived");
 case!(byte_order, "byte_order");
 case!(arrays, "arrays");
@@ -540,6 +541,157 @@ fn binary16_narrowing_rounds_to_nearest_even() {
 fn calibration_matches_the_interpreter_bit_for_bit() {
     let checked = check!(calibrated, "calibrated.xml", None::<&str>, 256u64);
     assert!(checked > 1_500, "only {checked} field(s) compared");
+}
+
+/// Context calibration, against the interpreter, with every branch taken.
+///
+/// A `<ContextCalibratorList>` gives one parameter several calibrators and picks between them
+/// by what the rest of the packet says. Encoding is untouched by that too, so what is under
+/// test is again the accessor — but an accessor that is now an else-if chain, and a
+/// comparison is only worth what the packets exercised.
+///
+/// That is the second half of this test. The harness invents a uniformly random value for
+/// every field, so a criterion on an eight-bit field would hold in one packet in 256: the
+/// default branch would be checked thousands of times and the contexts twice, and the test
+/// would pass whatever the chain did with them. The fields the criteria test are narrow for
+/// that reason, and the counts below fail loudly if a change to the definition, the seed or
+/// the harness quietly stops reaching a branch.
+#[test]
+fn context_calibrators_match_the_interpreter() {
+    let checked = check!(
+        context_calibrated,
+        "context_calibrated.xml",
+        None::<&str>,
+        256u64
+    );
+    assert!(checked > 2_000, "only {checked} field(s) compared");
+
+    use context_calibrated::harness::Expected;
+
+    let mut modes = [0usize; 4];
+    let mut valid = 0usize;
+    // SELF's context tests SELF itself, and LOOKAHEAD's tests a parameter decoded after it,
+    // which resolves to LOOKAHEAD's own raw value. Both are counted from the raw value the
+    // harness reports, which is the value the criterion compares.
+    let mut self_above = 0usize;
+    let mut lookahead_hit = 0usize;
+
+    for round in 0..256u64 {
+        // The same seeds `check!` used, so these are the packets that were compared.
+        let seed = 0x2545_F491_4F6C_DD1Du64.wrapping_mul(round + 1) ^ (round << 32);
+        for case in context_calibrated::harness::cases(seed) {
+            for (parameter, value) in &case.expected {
+                match (*parameter, value) {
+                    ("MODE", Expected::Unsigned(mode)) => {
+                        modes[usize::try_from(*mode).expect("MODE is two bits")] += 1;
+                    }
+                    ("VALID", Expected::Bool(true)) => valid += 1,
+                    _ => {}
+                }
+            }
+            for (parameter, raw, _) in &case.calibrated {
+                match *parameter {
+                    "SELF" if *raw > 2048 => self_above += 1,
+                    "LOOKAHEAD" if *raw == 5 => lookahead_hit += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    for (mode, count) in modes.iter().enumerate() {
+        assert!(
+            *count > 20,
+            "MODE was {mode} in only {count} packet(s), so a branch of SENSOR's chain went \
+             untested"
+        );
+    }
+    assert!(valid > 20, "VALID was set in only {valid} packet(s)");
+    assert!(
+        self_above > 20,
+        "SELF was above its own threshold in only {self_above} packet(s)"
+    );
+    assert!(
+        lookahead_hit > 5,
+        "LOOKAHEAD's criterion held in only {lookahead_hit} packet(s)"
+    );
+}
+
+/// A criterion naming a parameter decoded later reads the field being calibrated.
+///
+/// The surprising rule, driven deliberately rather than left to the seeds. LOOKAHEAD's
+/// context tests `LATER == 5`, and LATER sits *after* LOOKAHEAD in the container. A criterion
+/// compares what has been decoded so far, so LATER is not there to compare and what the
+/// reference reaches for instead is the raw value of the field being calibrated. The
+/// definition says `LATER`; the comparison is against LOOKAHEAD.
+///
+/// Two packets, chosen so that a generator following the parameter's *name* gives the
+/// opposite answer on both. The interpreter is asked as well, because agreeing with it is the
+/// point — but the assertions on the values stand on their own, so this test still says what
+/// it means if the two implementations ever drift together.
+#[test]
+fn a_criterion_on_a_later_parameter_reads_the_field_being_calibrated() {
+    use context_calibrated::flight::{Flags, Telemetry};
+
+    let db = XtceDb::from_path(testdata("context_calibrated.xml")).expect("definition loads");
+    let decoder = Decoder::new(&db).expect("root container");
+
+    let template = Telemetry {
+        mode: 0,
+        flags: Flags::Idle,
+        valid: false,
+        spare_3: 0,
+        sensor: 0,
+        armed: 0,
+        self_: 0,
+        lookahead: 0,
+        spline_ctx: 0,
+        later: 0,
+        plain: 0,
+    };
+
+    // `(LOOKAHEAD, LATER, what the context calibrator makes of it)`. The context applies
+    // 7.0; the default is the raw value itself.
+    let cases = [
+        (
+            5u8,
+            0u8,
+            7.0f64,
+            "the criterion holds on LOOKAHEAD's own value",
+        ),
+        (0, 5, 0.0, "LATER is 5, but LATER is not what is compared"),
+    ];
+
+    for (lookahead, later, expected, what) in cases {
+        let packet = Telemetry {
+            lookahead,
+            later,
+            ..template
+        };
+        let mut buffer = [0u8; Telemetry::LEN];
+        packet.encode(&mut buffer).expect("every value fits");
+
+        let decoded = Telemetry::decode(&buffer).expect("what was just encoded decodes");
+        let value = decoded
+            .lookahead_calibrated()
+            .expect("a polynomial never fails");
+        assert_eq!(
+            value.to_bits(),
+            expected.to_bits(),
+            "{what}: LOOKAHEAD {lookahead}, LATER {later} calibrated to {value}"
+        );
+
+        let (_, seen) = interpret(&db, &decoder, &buffer);
+        let (interpreted, _) = seen.get("LOOKAHEAD").expect("the interpreter reports it");
+        match interpreted {
+            Seen::Float(interpreted) => assert_eq!(
+                value.to_bits(),
+                interpreted.to_bits(),
+                "{what}: the interpreter read {interpreted}"
+            ),
+            other => panic!("{what}: the interpreter read {other:?}"),
+        }
+    }
 }
 
 /// The integral and floating-point power paths are not interchangeable.
