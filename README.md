@@ -3,7 +3,7 @@
 [![CI](https://github.com/RustSpaceLab/xtce-flight/actions/workflows/ci.yml/badge.svg)](https://github.com/RustSpaceLab/xtce-flight/actions/workflows/ci.yml)
 
 Compile an XTCE definition into a `no_std` Rust **encoder** — and decoder — for the spacecraft
-side.
+side. Telemetry going down, telecommands coming up.
 
 Ground software reads packets, and the public XTCE tooling reflects that: parsers, decoders,
 displays. Flight software writes them, on a part with no heap, no operating system and a hard
@@ -61,10 +61,10 @@ check folds away. The script then reads the IR and fails if any reference to the
 machinery survived. It also fails if the probe's own functions are *absent* from the IR, so
 it cannot pass by having optimised away the code it is meant to inspect.
 
-Current result, on the eight definitions the probe compiles:
+Current result, on the nine definitions the probe compiles:
 
 ```
-no panic path in 10038 lines of IR for thumbv7em-none-eabihf
+no panic path in 10718 lines of IR for thumbv7em-none-eabihf
 ```
 
 ## How correctness is argued
@@ -124,12 +124,43 @@ than one that stops, because the gap only shows up in flight.
 | `leastSignificantByteFirst`, other widths | Refused — reversing a value narrower than its byte count has no inverse |
 | `DefaultCalibrator`: polynomial and spline | Yes — on the decode side, as an accessor |
 | `ContextCalibratorList` | Yes — an else-if chain over the packet's own fields, resolved when the code is generated |
+| `CommandMetaData`: `MetaCommand`, `ArgumentList`, `CommandContainer` | Yes — a command is a container, an argument is a field |
+| `ArgumentAssignment` | Yes — the same thing a restriction criterion is, read the other way round |
+| `FixedValueEntry` | Yes — written by `encode`, stepped over by `decode`; see below |
+| A fixed value wider than 64 bits | Refused — it cannot be written as one literal |
 | A context criterion on bits a restriction criterion fixes, or on a boolean wider than a bit | Refused — the struct does not carry the value it would compare |
 | Splines above first order | Refused |
 | A width that comes from the packet | Refused — it has no fixed place in a `struct` |
 | An inequality restriction criterion | Refused — it names a set, and an encoder writes one value |
 | A float that is not 16, 32 or 64 bits | Refused — there is no such IEEE-754 format |
 | Text or binary off a byte boundary | Refused — it is written as a slice |
+
+### A telecommand is a container, and its arguments are its fields
+
+XTCE describes a telecommand with its own vocabulary — a `MetaCommand` with an `ArgumentList`,
+an inheritance link carrying `ArgumentAssignment`s, a `CommandContainer` whose entries may name
+arguments, parameters and fixed values. None of that is a new shape. It is a container of
+fields selected by fixed values, which is what a telemetry container is, so it compiles into
+the same `struct` with the same `encode` and `decode`.
+
+The direction is what changes. Telemetry goes down: this generator writes it, the ground reads
+it. A telecommand goes up: the ground writes it, the part reads it. Same two pieces of code,
+swapped over — and `encode` is worth having on both ends anyway, because a spacecraft that can
+build the command it is about to obey can test itself.
+
+An `ArgumentAssignment` becomes a restriction criterion, because it is one read backwards:
+assigning `OPCODE = 7` is what makes this command a specialisation of its base, and comparing
+`OPCODE == 7` is what recognises an arriving packet as this command. So `encode` writes the
+opcode and the caller cannot get it wrong, exactly as with a telemetry criterion.
+
+A `FixedValueEntry` — a sync marker, a spare nibble, a trailer — is written by `encode` and
+**not** read by `decode` or `matches`. That is worth saying out loud, because a sync marker
+looks like something a receiver ought to check. XTCE selects a container by its restriction
+criteria and has no rule that makes a fixed value discriminate; the interpreter this generator
+is checked against does not check them either; and checking here would make the two disagree
+about whether a malformed packet is this command, in the direction where only one of them
+refuses. Verifying a sync marker is a layer below XTCE, where the framing and the checksum
+live.
 
 ### Byte order is an operation to invert, not to apply
 
@@ -243,12 +274,13 @@ tested without putting them in the repository.
 | `testdata/calibrated.xml` | purpose-built: polynomials over both an integer and a float encoding, a negative exponent, and splines of both orders |
 | `testdata/calibrated_bounded.xml` | purpose-built: one spline that may not extrapolate, so the refusal can be driven on both sides of every boundary |
 | `testdata/context_calibrated.xml` | purpose-built: several calibrators for one parameter, chosen by the packet — including a criterion on the field being calibrated, and one on a parameter decoded after it |
+| `testdata/commands.xml` | purpose-built: a `<CommandMetaData>` half — two commands specialising an abstract base by argument assignment, a four-byte sync marker, a four-bit spare that leaves the payload off a byte boundary, and a trailer whose `binaryValue` is wider than its `sizeInBits` |
 | `testdata/contrived_inheritance_structure.xml` | a real mission definition whose container is selected by a `<BooleanExpression>` rather than a `<ComparisonList>` |
 | `testdata/byte_order.xml` | purpose-built: little-endian fields of every whole-byte width, aligned and not, and a little-endian criterion |
 | `testdata/arrays.xml` | purpose-built: arrays of one and two dimensions, a subset of one, and six four-bit elements that keep everything after them off a byte boundary |
 | `testdata/aggregates.xml` | purpose-built: an aggregate, an array of them, one holding an array, and a four-bit member that ends it off a byte boundary |
 
-Eight of the ten are written rather than found, and deliberately so. Mission files are the
+Nine of the eleven are written rather than found, and deliberately so. Mission files are the
 right thing to validate against, but between them they reach almost none of an encoder's
 edges: no label that needs sanitising, no terminated string, no float at an offset that makes
 it span an extra byte, and **no calibrator anywhere at all**. Two bugs in this repository
@@ -267,7 +299,7 @@ crates/xtce-flight        the generator, and the `xtce-flight` command
 crates/xtce-flight-e2e    generated code and harness, against the interpreter
 probes/nostd              the bare-metal build, and what the panic check reads
 scripts/check-no-panic.sh the panic check
-testdata/                 ten definitions, two of them real
+testdata/                 eleven definitions, two of them real
 ```
 
 ## Licence

@@ -74,6 +74,61 @@ fn refusal(result: Result<xtce_flight::Layout, FlightError>) -> String {
     }
 }
 
+/// A whole document with a one-field telemetry half and the given `<CommandMetaData>` body.
+///
+/// Not `definition`: that one wraps its argument in `<TelemetryMetaData>`, and a command half
+/// is a sibling of it rather than a child.
+fn command_definition(command_body: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<SpaceSystem xmlns="http://www.omg.org/spec/XTCE/20180204" name="Test">
+  <TelemetryMetaData>
+    <ParameterTypeSet>
+      <IntegerParameterType name="FIELD_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet><Parameter name="FIELD" parameterTypeRef="FIELD_T"/></ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Only">
+        <EntryList><ParameterRefEntry parameterRef="FIELD"/></EntryList>
+      </SequenceContainer>
+    </ContainerSet>
+  </TelemetryMetaData>
+  <CommandMetaData>
+    <ArgumentTypeSet>
+      <IntegerArgumentType name="U8_A">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerArgumentType>
+    </ArgumentTypeSet>
+    <MetaCommandSet>
+      <MetaCommand name="Cmd">
+        <ArgumentList><Argument name="A" argumentTypeRef="U8_A"/></ArgumentList>
+        <CommandContainer name="Packing">
+          <EntryList>
+{command_body}
+            <ArgumentRefEntry argumentRef="A"/>
+          </EntryList>
+        </CommandContainer>
+      </MetaCommand>
+    </MetaCommandSet>
+  </CommandMetaData>
+</SpaceSystem>"#
+    )
+}
+
+/// The layout of `Packing` in a `command_definition`.
+fn command_layout(command_body: &str) -> Result<xtce_flight::Layout, FlightError> {
+    let db = XtceDb::from_xml(&command_definition(command_body)).expect("definition loads");
+    xtce_flight::layout(
+        &db,
+        &Options {
+            root: Some("Packing".to_owned()),
+            source_label: None,
+        },
+    )
+}
+
 #[test]
 fn a_plain_container_becomes_one_struct() {
     let layout = layout_of(&one_field(
@@ -756,6 +811,50 @@ fn a_context_criterion_on_a_wide_boolean_is_refused() {
 
     assert!(
         error.contains("boolean wider than one bit"),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// A `<FixedValueEntry>` becomes bits the encoder writes, reduced to the width it declares.
+#[test]
+fn a_fixed_value_becomes_bits_the_encoder_writes() {
+    let plain = layout_of(&one_field(
+        r#"<IntegerParameterType name="FIELD_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>"#,
+        0,
+    ))
+    .expect("compiles");
+    assert!(
+        plain.containers[0].fixed.is_empty(),
+        "a telemetry container has none"
+    );
+
+    let layout = command_layout(
+        r#"            <FixedValueEntry name="SYNC" binaryValue="DEADBEEF" sizeInBits="16"/>"#,
+    )
+    .expect("the command compiles");
+
+    let fixed = &layout.containers[0].fixed;
+    assert_eq!(fixed.len(), 1);
+    assert_eq!(fixed[0].xtce_name.as_deref(), Some("SYNC"));
+    assert_eq!(fixed[0].bit_offset, 0);
+    assert_eq!(fixed[0].bit_width, 16);
+    // Four bytes given for sixteen bits: the low half is what goes on the wire.
+    assert_eq!(fixed[0].raw, 0xBEEF);
+    // The argument sits after it, and is the caller's to set.
+    assert_eq!(layout.containers[0].fields.len(), 1);
+    assert_eq!(layout.containers[0].fields[0].bit_offset, 16);
+}
+
+/// A fixed value wider than a `u64` is refused rather than written in pieces.
+#[test]
+fn a_fixed_value_wider_than_64_bits_is_refused() {
+    let error = refusal(command_layout(
+        r#"            <FixedValueEntry name="FILL" binaryValue="00112233445566778899AABBCCDDEEFF" sizeInBits="128"/>"#,
+    ));
+    assert!(
+        error.contains("FixedValueEntry") && error.contains("64 bits"),
         "unexpected refusal: {error}"
     );
 }

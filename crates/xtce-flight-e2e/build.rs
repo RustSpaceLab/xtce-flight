@@ -19,6 +19,10 @@ const CASES: &[(&str, &str, Option<&str>)] = &[
     // Purpose-built. Context calibrators: several calibrators for one parameter, chosen by
     // what the rest of the packet says.
     ("context_calibrated", "context_calibrated.xml", None),
+    // A telecommand. The other direction of this repository's claim: the ground writes these
+    // and the spacecraft reads them, so `encode` here is the ground's half and `decode` is
+    // the one that runs on the part. Rooted at the abstract base command's container.
+    ("commands", "commands.xml", Some("CmdBaseContainer")),
     // Purpose-built. `leastSignificantByteFirst`, which an encoder has to invert rather than
     // merely apply.
     ("byte_order", "byte_order.xml", None),

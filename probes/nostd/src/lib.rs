@@ -44,6 +44,11 @@ pub mod context_calibrated {
 }
 
 #[allow(dead_code, clippy::all, clippy::pedantic)]
+pub mod commands {
+    include!(concat!(env!("OUT_DIR"), "/commands.rs"));
+}
+
+#[allow(dead_code, clippy::all, clippy::pedantic)]
 pub mod byte_order {
     include!(concat!(env!("OUT_DIR"), "/byte_order.rs"));
 }
@@ -214,6 +219,28 @@ pub fn calibrate_in_context(data: &[u8]) -> f64 {
         }
     }
     sum
+}
+
+/// Encodes a telecommand and decodes it back.
+///
+/// The other direction of what this crate is for, and the only path with a `<FixedValueEntry>`
+/// in it: bits `encode` writes that no caller supplies and no decoder reads back.
+#[inline(never)]
+#[must_use]
+pub fn round_trip_command(out: &mut [u8]) -> bool {
+    let packet = commands::SetGainContainer {
+        seq_count: 0x1234,
+        channel: 3,
+        gain: 1.5,
+        trim: -7,
+    };
+    let Ok(written) = packet.encode(out) else {
+        return false;
+    };
+    let Some(bytes) = out.get(..written) else {
+        return false;
+    };
+    matches!(commands::decode(bytes), Ok(commands::Packet::SetGainContainer(decoded)) if decoded == packet)
 }
 
 /// Encodes and decodes a packet of little-endian fields.

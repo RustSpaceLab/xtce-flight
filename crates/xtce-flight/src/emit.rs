@@ -189,6 +189,24 @@ fn container(container: &Container, enums: &[EnumType]) -> TokenStream {
         }
     });
 
+    let fixed_doc = if container.fixed.is_empty() {
+        String::new()
+    } else {
+        let listed = container
+            .fixed
+            .iter()
+            .map(|fixed| match &fixed.xtce_name {
+                Some(name) => format!("`{name}`"),
+                None => format!("an unnamed value at bit {}", fixed.bit_offset),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "\n\nIt also writes the values the definition fixes ({listed}). `decode` steps over \
+             them without reading them: XTCE selects a container by its restriction criteria, \
+             and a fixed value is packaging rather than a discriminator."
+        )
+    };
     let constant_doc = if container.constants.is_empty() {
         String::new()
     } else {
@@ -204,7 +222,7 @@ fn container(container: &Container, enums: &[EnumType]) -> TokenStream {
         )
     };
     let doc = format!(
-        "`{}`, {} byte(s) on the wire.{constant_doc}",
+        "`{}`, {} byte(s) on the wire.{constant_doc}{fixed_doc}",
         container.xtce_name, container.len_bytes
     );
 
@@ -535,6 +553,24 @@ fn encode_body(container: &Container) -> TokenStream {
         }
     });
 
+    // Bits the definition fixed rather than the criteria: a sync marker, a spare nibble, a
+    // trailer. Written the same way and for the same reason — the caller does not get to
+    // choose them — but they are not criteria, and `matches` does not read them back.
+    let fixed = container.fixed.iter().enumerate().map(|(index, fixed)| {
+        let binding = match &fixed.xtce_name {
+            Some(name) => format_ident!("fixed_{}", xtce_codegen::plan::field_ident(name)),
+            None => format_ident!("fixed_value_{index}"),
+        };
+        let raw = Literal::u64_unsuffixed(fixed.raw);
+        let write = write_bits(fixed.bit_offset, fixed.bit_width, &quote!(#binding), &out);
+        quote! {
+            {
+                let #binding: u64 = #raw;
+                #write
+            }
+        }
+    });
+
     let fields = container
         .fields
         .iter()
@@ -564,6 +600,7 @@ fn encode_body(container: &Container) -> TokenStream {
             *out = [0u8; #len];
 
             #(#constants)*
+            #(#fixed)*
             #(#fields)*
 
             Ok(#len)

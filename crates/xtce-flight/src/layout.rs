@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use xtce_codegen::plan::{ContextCalibration, TextCharset, TextDelimiter};
+use xtce_codegen::plan::{ContextCalibration, FixedBits, TextCharset, TextDelimiter};
 use xtce_codegen::{Calibration, ContainerPlan, Criterion, Field, Guard, Node, Plan, Repr};
 use xtce_model::CompareOp;
 use xtce_model::types::IntegerCoding;
@@ -46,6 +46,12 @@ pub struct Container {
     pub fields: Vec<FlightField>,
     /// Bits `encode` writes itself, so that the packet matches this container's criteria.
     pub constants: Vec<Constant>,
+    /// Bits `encode` writes itself because the definition fixed them: `<FixedValueEntry>`.
+    ///
+    /// Only a telecommand has these — a sync marker, a spare nibble, a trailer. They are not
+    /// criteria: nothing selects a container by them, and neither `decode` nor `matches`
+    /// looks at them. See [`FixedValue`] for why not.
+    pub fixed: Vec<FixedValue>,
     /// Whether any field borrows from the buffer, which decides if the struct has a lifetime.
     pub borrows: bool,
 }
@@ -154,6 +160,27 @@ pub struct Constant {
     ///
     /// Only a test needs this: the encoder writes `raw`, and the interpreter reports this.
     pub reported: u64,
+}
+
+/// One `<FixedValueEntry>`: bits the definition writes and nobody supplies.
+///
+/// `encode` puts them on the wire. `decode` and `matches` ignore them, which is worth saying
+/// out loud because a sync marker looks like something a receiver ought to check. XTCE selects
+/// a container by its restriction criteria and has no rule that makes a fixed value
+/// discriminate, and the interpreter this generator is checked against does not check them
+/// either — so checking here would make the two disagree about whether a malformed packet is
+/// this command, in the direction where only one of them refuses. Verifying a sync marker is a
+/// layer below XTCE, where the framing and the checksum live.
+#[derive(Clone, Debug)]
+pub struct FixedValue {
+    /// The entry's `name`, if the definition gave it one. For the generated binding.
+    pub xtce_name: Option<String>,
+    /// Where the bits sit.
+    pub bit_offset: usize,
+    /// How wide they are.
+    pub bit_width: u32,
+    /// The value, already reduced to the width — see `xtce_codegen::plan::FixedBits`.
+    pub raw: u64,
 }
 
 /// What the caller supplies for a field, and therefore how it is written.
@@ -370,6 +397,12 @@ impl Builder {
             })
             .collect::<Result<Vec<FlightField>, FlightError>>()?;
 
+        let fixed = plan
+            .fixed
+            .iter()
+            .map(|fixed| Self::fixed_value(fixed, &plan.xtce_name))
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(Container {
             type_ident: unique(&mut self.taken, type_ident(&plan.xtce_name)),
             xtce_name: plan.xtce_name.clone(),
@@ -377,6 +410,31 @@ impl Builder {
             borrows: deduplicated.iter().any(|field| field.kind.borrows()),
             fields: deduplicated,
             constants,
+            fixed,
+        })
+    }
+
+    /// One `<FixedValueEntry>`, as bits the encoder writes.
+    ///
+    /// The plan has already reduced the value to the declared width, so all that is left is
+    /// to check it fits one literal.
+    fn fixed_value(fixed: &FixedBits, container: &str) -> Result<FixedValue, FlightError> {
+        if fixed.bit_width > 64 {
+            return Err(FlightError::Unsupported {
+                element: "FixedValueEntry".to_owned(),
+                container: container.to_owned(),
+                reason: "a fixed value wider than 64 bits cannot be written as one literal",
+            });
+        }
+        let mut raw = 0u64;
+        for byte in &fixed.value {
+            raw = (raw << 8) | u64::from(*byte);
+        }
+        Ok(FixedValue {
+            xtce_name: fixed.xtce_name.clone(),
+            bit_offset: fixed.bit_offset,
+            bit_width: fixed.bit_width,
+            raw,
         })
     }
 

@@ -42,6 +42,7 @@ case!(jpss, "jpss");
 case!(calibrated, "calibrated");
 case!(calibrated_bounded, "calibrated_bounded");
 case!(context_calibrated, "context_calibrated");
+case!(commands, "commands");
 case!(contrived, "contrived");
 case!(byte_order, "byte_order");
 case!(arrays, "arrays");
@@ -848,6 +849,70 @@ fn a_bounded_spline_refuses_outside_its_points() {
     // 50 to 200 inclusive is 151 of the 256 values, and the rest have no answer.
     assert_eq!(answered, 151);
     assert_eq!(refused, 105);
+}
+
+/// A telecommand encoded here is the telecommand the interpreter reads.
+///
+/// The other direction of what this repository claims. Telemetry goes down: `xtce-flight`
+/// writes it and the ground reads it. A telecommand goes up: the ground writes it and the
+/// part reads it — the same two pieces of code, swapped over. What is under test is
+/// therefore the same round trip, on a definition whose fields are arguments rather than
+/// parameters, whose containers are chosen by an argument assignment rather than by a
+/// restriction criterion, and which carries bits nobody supplies.
+///
+/// Those bits are the part worth naming. A `<FixedValueEntry>` is written by `encode` and
+/// read by nothing: XTCE selects a container by its criteria, and the interpreter does not
+/// check a fixed value either. The check below is that they are nevertheless *there* — a
+/// generator that dropped them would move every field after them, and the comparison against
+/// the interpreter would catch that; one that dropped a trailing one would not, so the sync
+/// marker and the trailer are asserted by hand.
+#[test]
+fn a_telecommand_survives_the_interpreter() {
+    let checked = check!(commands, "commands.xml", Some("CmdBaseContainer"), 256u64);
+    assert!(checked > 1_000, "only {checked} field(s) compared");
+}
+
+/// The bits the definition fixes are on the wire, at the width it declared.
+///
+/// Driven by hand because nothing else can see them. `SYNC` is four whole bytes at the front;
+/// `SPARE` is four bits that leave `MODE` off a byte boundary; `TRAILER` gives four bytes for
+/// a sixteen-bit field, and XTCE does not require those to agree — read as one big-endian
+/// number, `DEADBEEF` in sixteen bits is `BEEF`, and an encoder that wrote `DEAD` would
+/// produce a packet the ground cannot recognise while its own decoder stayed perfectly happy.
+#[test]
+fn the_fixed_values_a_command_carries_are_written() {
+    use commands::flight::{SetGainContainer, SetModeContainer};
+
+    let mut buffer = [0u8; SetModeContainer::LEN];
+    let written = SetModeContainer {
+        seq_count: 0xABCD,
+        mode: 0,
+    }
+    .encode(&mut buffer)
+    .expect("every value fits");
+    assert_eq!(written, 8);
+    assert_eq!(&buffer[0..4], &[0x1A, 0xCF, 0xFC, 0x1D], "the sync marker");
+    assert_eq!(buffer[6], 1, "the opcode the argument assignment pins");
+    // Four bits of spare, then four bits of MODE.
+    assert_eq!(
+        buffer[7], 0xA0,
+        "the spare nibble, and a zero mode below it"
+    );
+
+    let mut buffer = [0u8; SetGainContainer::LEN];
+    SetGainContainer {
+        seq_count: 0,
+        channel: 0,
+        gain: 0.0,
+        trim: 0,
+    }
+    .encode(&mut buffer)
+    .expect("every value fits");
+    assert_eq!(
+        &buffer[14..16],
+        &[0xBE, 0xEF],
+        "four bytes given for sixteen bits keeps the low half"
+    );
 }
 
 /// A container selected by a `<BooleanExpression>` survives the round trip.
