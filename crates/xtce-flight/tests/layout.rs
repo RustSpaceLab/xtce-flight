@@ -4,7 +4,7 @@
 //! next to the smallest definition that provokes it, and a test that has to be read against a
 //! 14 000-line mission file is a test nobody reads.
 
-use xtce_flight::{ContextCriterion, ContextTest, FlightError, Kind, Options};
+use xtce_flight::{ContextComparison, ContextCriterion, ContextTest, FlightError, Kind, Options};
 use xtce_model::XtceDb;
 
 /// Wraps `body` in the smallest space system that will load.
@@ -319,7 +319,7 @@ fn a_non_equality_criterion_is_refused() {
     </ContainerSet>"#;
     let message = refusal(layout_of(body));
     assert!(
-        message.contains("equality criterion"),
+        message.contains("single value"),
         "unexpected refusal: {message}"
     );
 }
@@ -697,11 +697,19 @@ fn a_context_calibrator_resolves_to_the_fields_of_the_struct() {
         tests[0].ident, "mode",
         "a preceding field, by name and bits"
     );
-    assert_eq!(tests[0].value, 1);
+    assert!(
+        matches!(tests[0].test, ContextComparison::Value { value: 1, .. }),
+        "a number against a number: {:?}",
+        tests[0].test
+    );
     // The definition says SENSOR, and SENSOR is what it gets: the field being calibrated.
     assert_eq!(tests[1].ident, "sensor");
     assert_eq!(tests[1].xtce_name, "SENSOR");
-    assert_eq!(tests[1].value, 7);
+    assert!(
+        matches!(tests[1].test, ContextComparison::Value { value: 7, .. }),
+        "and so is this one: {:?}",
+        tests[1].test
+    );
 }
 
 /// A criterion on bits the restriction criteria fix is refused, not quietly ignored.

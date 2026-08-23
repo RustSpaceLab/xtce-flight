@@ -62,8 +62,8 @@ pub mod layout;
 use xtce_model::XtceDb;
 
 pub use layout::{
-    Constant, Container, ContextCriterion, ContextTest, EnumType, FixedValue, FlightContext,
-    FlightField, Kind, Layout,
+    Constant, Container, ContextComparison, ContextCriterion, ContextTest, EnumType, FixedValue,
+    FlightContext, FlightField, Kind, Layout,
 };
 
 /// What to generate.

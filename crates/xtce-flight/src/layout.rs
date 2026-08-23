@@ -15,7 +15,9 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use xtce_codegen::plan::{ContextCalibration, FixedBits, TextCharset, TextDelimiter};
-use xtce_codegen::{Calibration, ContainerPlan, Criterion, Field, Guard, Node, Plan, Repr};
+use xtce_codegen::{
+    Calibration, ContainerPlan, Criterion, Field, Guard, GuardTest, Node, Plan, Repr,
+};
 use xtce_model::CompareOp;
 use xtce_model::types::IntegerCoding;
 
@@ -122,6 +124,23 @@ pub enum ContextCriterion {
     Any(Vec<ContextCriterion>),
 }
 
+/// What one [`ContextTest`] compares its field with.
+///
+/// The two shapes [`xtce_codegen::GuardTest`] has, carried through: a number against a
+/// number, or a *label* already resolved to the raw values that satisfy it.
+#[derive(Clone, Debug)]
+pub enum ContextComparison {
+    /// The field's value against a literal.
+    Value {
+        /// The operator.
+        operator: CompareOp,
+        /// The literal, as the plan read it.
+        value: i128,
+    },
+    /// Inclusive raw ranges whose labels satisfy the comparison. Empty holds for nothing.
+    Labels(Vec<(i128, i128)>),
+}
+
 /// One comparison inside a [`ContextCriterion`].
 #[derive(Clone, Debug)]
 pub struct ContextTest {
@@ -137,10 +156,10 @@ pub struct ContextTest {
     /// container had not decoded yet, the plan has already resolved the comparison to the
     /// field being calibrated, and this is that field.
     pub xtce_name: String,
-    /// The operator.
-    pub operator: CompareOp,
-    /// The literal, as the plan read it.
-    pub value: i128,
+    /// Whether the struct field is a generated enum, whose raw value is behind `raw()`.
+    pub enumerated: bool,
+    /// What the field is compared with.
+    pub test: ContextComparison,
 }
 
 /// A restriction criterion, as bits the encoder writes.
@@ -476,14 +495,15 @@ impl Builder {
         // `flatten` has already established this. Kept because it is what makes the `raw`
         // below meaningful, and a backstop that costs nothing is worth more than a comment
         // saying it cannot happen.
-        if guard.operator != CompareOp::Equal {
+        let Some(value) = guard.test.sole_value() else {
             return Err(FlightError::Unsupported {
                 element: "Comparison".to_owned(),
                 container: container.to_owned(),
-                reason: "only an equality criterion has one value an encoder could write; \
-                         an inequality names a set",
+                reason: "only a criterion with a single value has something an encoder could \
+                         write; an inequality names a set, and so does a label the \
+                         enumeration gives more than one value",
             });
-        }
+        };
         if guard.bit_width > 64 {
             return Err(FlightError::Unsupported {
                 element: "Comparison".to_owned(),
@@ -506,7 +526,7 @@ impl Builder {
         // the field's width — the same truncation the comparison itself performs.
         let mask = mask_for(guard.bit_width);
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let raw = (guard.value as i64 as u64) & mask;
+        let raw = (value as i64 as u64) & mask;
         // A criterion on a little-endian field compares the value *after* the reversal, so
         // what goes on the wire is the reversal undone. It is a whole number of bytes here,
         // so that is just the bytes the other way round — and it costs nothing at run time,
@@ -597,7 +617,10 @@ impl Builder {
         }
 
         match &spot.kind {
-            Kind::Unsigned | Kind::Signed(_) => {}
+            // An enumeration is a generated Rust enum in the struct, and its raw value is one
+            // method call away. A criterion on one is either a number against that raw value
+            // or a label the plan has already turned into a set of them.
+            Kind::Unsigned | Kind::Signed(_) | Kind::Enumerated(_) => {}
             // A single bit is a `bool` without loss: the value is the bit. A wider boolean
             // field is not — the struct keeps whether the bits were nonzero, not which they
             // were, and a criterion tests the bits.
@@ -610,15 +633,8 @@ impl Builder {
             }
             // A criterion's literal is an integer — the plan reads it as one — and there is
             // no comparison to write against a string, a blob, or a float whose nearest
-            // representable value is not the number the definition spelled. An enumeration
-            // does not reach here either: the plan compiles a criterion only on a field that
-            // is an integer or a boolean, and this is the backstop for that.
-            Kind::Enumerated(_)
-            | Kind::Float16
-            | Kind::Float32
-            | Kind::Float64
-            | Kind::Text { .. }
-            | Kind::Binary => {
+            // representable value is not the number the definition spelled.
+            Kind::Float16 | Kind::Float32 | Kind::Float64 | Kind::Text { .. } | Kind::Binary => {
                 return Err(refuse(
                     "a context calibrator's criterion compares an integer, and this one \
                      tests a field that is not one",
@@ -629,8 +645,14 @@ impl Builder {
         Ok(ContextTest {
             ident: spot.ident.clone(),
             xtce_name: spot.xtce_name.clone(),
-            operator: guard.operator,
-            value: guard.value,
+            enumerated: matches!(spot.kind, Kind::Enumerated(_)),
+            test: match &guard.test {
+                GuardTest::Value { operator, value } => ContextComparison::Value {
+                    operator: *operator,
+                    value: *value,
+                },
+                GuardTest::Labels { ranges, .. } => ContextComparison::Labels(ranges.clone()),
+            },
         })
     }
 
@@ -859,10 +881,11 @@ fn flatten(
 
     match criterion {
         Criterion::Test(guard) => {
-            if guard.operator != CompareOp::Equal {
+            if guard.test.sole_value().is_none() {
                 return Err(refuse(
-                    "only an equality criterion has one value an encoder could write; an \
-                     inequality names a set",
+                    "only a criterion with a single value has something an encoder could \
+                     write; an inequality names a set, and so does a label the enumeration \
+                     gives more than one value",
                 ));
             }
             into.push(guard.clone());

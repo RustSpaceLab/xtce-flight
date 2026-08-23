@@ -125,13 +125,13 @@ than one that stops, because the gap only shows up in flight.
 | `DefaultCalibrator`: polynomial and spline | Yes — on the decode side, as an accessor |
 | `ContextCalibratorList` | Yes — an else-if chain over the packet's own fields, resolved when the code is generated |
 | `CommandMetaData`: `MetaCommand`, `ArgumentList`, `CommandContainer` | Yes — a command is a container, an argument is a field |
-| `ArgumentAssignment` | Yes — the same thing a restriction criterion is, read the other way round |
+| `ArgumentAssignment` | Yes — the same thing a restriction criterion is, read the other way round; on an enumerated argument it pins a *label*, and `encode` writes the raw value behind it |
 | `FixedValueEntry` | Yes — written by `encode`, stepped over by `decode`; see below |
 | A fixed value wider than 64 bits | Yes when it is whole bytes on a byte boundary — written one byte at a time; refused otherwise, since it would have to be shifted across every byte it touches |
 | A context criterion on bits a restriction criterion fixes, or on a boolean wider than a bit | Refused — the struct does not carry the value it would compare |
 | Splines above first order | Refused |
 | A width that comes from the packet | Refused — it has no fixed place in a `struct` |
-| An inequality restriction criterion | Refused — it names a set, and an encoder writes one value |
+| An inequality restriction criterion, or a label the enumeration gives several values | Refused — it names a set, and an encoder writes one value |
 | A float that is not 16, 32 or 64 bits | Refused — there is no such IEEE-754 format |
 | Text or binary off a byte boundary | Refused — it is written as a slice |
 

@@ -25,8 +25,8 @@ use xtce_model::types::IntegerCoding;
 use xtce_codegen::Calibration;
 
 use crate::layout::{
-    Container, ContextCriterion, ContextTest, EnumType, FlightField, Kind, Layout, mask_for,
-    natural_bits,
+    Container, ContextComparison, ContextCriterion, ContextTest, EnumType, FlightField, Kind,
+    Layout, mask_for, natural_bits,
 };
 
 /// Renders the whole module.
@@ -327,17 +327,39 @@ fn calibrated_accessor(field: &FlightField) -> Option<TokenStream> {
 /// resolves the fallback, and the name it keeps is the parameter whose bits are compared.
 fn criteria_prose(criterion: &ContextCriterion) -> String {
     match criterion {
-        ContextCriterion::Test(test) => {
-            let operator = match test.operator {
-                CompareOp::Equal => "==",
-                CompareOp::NotEqual => "!=",
-                CompareOp::Less => "<",
-                CompareOp::LessOrEqual => "<=",
-                CompareOp::Greater => ">",
-                CompareOp::GreaterOrEqual => ">=",
-            };
-            format!("{} {operator} {}", test.xtce_name, test.value)
-        }
+        ContextCriterion::Test(test) => match &test.test {
+            ContextComparison::Value { operator, value } => {
+                let operator = match operator {
+                    CompareOp::Equal => "==",
+                    CompareOp::NotEqual => "!=",
+                    CompareOp::Less => "<",
+                    CompareOp::LessOrEqual => "<=",
+                    CompareOp::Greater => ">",
+                    CompareOp::GreaterOrEqual => ">=",
+                };
+                format!("{} {operator} {value}", test.xtce_name)
+            }
+            // A label comparison, already resolved. Written as the set it became, because
+            // that is what the code does and the label it came from is in the definition.
+            ContextComparison::Labels(ranges) => {
+                let listed = ranges
+                    .iter()
+                    .map(|(low, high)| {
+                        if low == high {
+                            format!("{low}")
+                        } else {
+                            format!("{low}..={high}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                if listed.is_empty() {
+                    format!("{} matches no label", test.xtce_name)
+                } else {
+                    format!("{} is {listed}", test.xtce_name)
+                }
+            }
+        },
         ContextCriterion::All(children) => {
             if children.is_empty() {
                 return "always".to_owned();
@@ -456,12 +478,42 @@ fn context_condition(criterion: &ContextCriterion) -> TokenStream {
 /// and the constant folds away.
 fn context_test(test: &ContextTest) -> TokenStream {
     let field = ident(&test.ident);
-    // `i128::from` accepts every type the field can have here — the layout only resolves a
-    // test to an integer field or a one-bit `bool`, and `From<bool>` gives the bit itself.
-    let value = quote!(i128::from(self.#field));
-    let literal = Literal::i128_unsuffixed(test.value);
-    let operator = compare_op(test.operator);
-    quote! { #value #operator #literal }
+    // `i128::from` accepts every type the field can have here — the layout resolves a test to
+    // an integer field, a one-bit `bool` whose `From` gives the bit itself, or an enumeration,
+    // whose raw value is one method call away.
+    let value = if test.enumerated {
+        quote!(i128::from(self.#field.raw()))
+    } else {
+        quote!(i128::from(self.#field))
+    };
+
+    match &test.test {
+        ContextComparison::Value {
+            operator,
+            value: literal,
+        } => {
+            let literal = Literal::i128_unsuffixed(*literal);
+            let operator = compare_op(*operator);
+            quote! { #value #operator #literal }
+        }
+        // A label comparison, resolved to raw values when the plan was built. An empty set
+        // holds for nothing the field can carry.
+        ContextComparison::Labels(ranges) => {
+            if ranges.is_empty() {
+                return quote! { false };
+            }
+            let patterns = ranges.iter().map(|(low, high)| {
+                let low = Literal::i128_unsuffixed(*low);
+                if low.to_string() == Literal::i128_unsuffixed(*high).to_string() {
+                    quote! { #low }
+                } else {
+                    let high = Literal::i128_unsuffixed(*high);
+                    quote! { #low..=#high }
+                }
+            });
+            quote! { matches!(#value, #(#patterns)|*) }
+        }
+    }
 }
 
 /// A comparison operator as Rust spells it.

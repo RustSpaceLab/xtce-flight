@@ -881,27 +881,33 @@ fn a_telecommand_survives_the_interpreter() {
 /// produce a packet the ground cannot recognise while its own decoder stayed perfectly happy.
 #[test]
 fn the_fixed_values_a_command_carries_are_written() {
-    use commands::flight::{SetGainContainer, SetModeContainer};
+    use commands::flight::{Power, PowerOnContainer, SetGainContainer, SetModeContainer};
 
     let mut buffer = [0u8; SetModeContainer::LEN];
     let written = SetModeContainer {
         seq_count: 0xABCD,
+        power: Power::Standby,
         mode: 0,
     }
     .encode(&mut buffer)
     .expect("every value fits");
-    assert_eq!(written, 8);
+    assert_eq!(written, 9);
     assert_eq!(&buffer[0..4], &[0x1A, 0xCF, 0xFC, 0x1D], "the sync marker");
     assert_eq!(buffer[6], 1, "the opcode the argument assignment pins");
+    assert_eq!(
+        buffer[7], 2,
+        "POWER is the caller's here: SetMode does not pin it"
+    );
     // Four bits of spare, then four bits of MODE.
     assert_eq!(
-        buffer[7], 0xA0,
+        buffer[8], 0xA0,
         "the spare nibble, and a zero mode below it"
     );
 
     let mut buffer = [0u8; SetGainContainer::LEN];
     SetGainContainer {
         seq_count: 0,
+        power: Power::Off,
         channel: 0,
         gain: 0.0,
         trim: 0,
@@ -909,10 +915,22 @@ fn the_fixed_values_a_command_carries_are_written() {
     .encode(&mut buffer)
     .expect("every value fits");
     assert_eq!(
-        &buffer[14..16],
+        &buffer[15..17],
         &[0xBE, 0xEF],
         "four bytes given for sixteen bits keeps the low half"
     );
+
+    // A command pinned by a *label* has no POWER field at all: the assignment fixed it, so
+    // `encode` writes the raw value the label resolves to and the caller cannot get it wrong.
+    let mut buffer = [0u8; PowerOnContainer::LEN];
+    PowerOnContainer {
+        seq_count: 0,
+        duration: 0,
+    }
+    .encode(&mut buffer)
+    .expect("every value fits");
+    assert_eq!(buffer[6], 3, "the opcode both power commands share");
+    assert_eq!(buffer[7], 1, "and the raw value behind the label ON");
 }
 
 /// A container selected by a `<BooleanExpression>` survives the round trip.
