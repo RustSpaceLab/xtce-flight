@@ -64,7 +64,7 @@ it cannot pass by having optimised away the code it is meant to inspect.
 Current result, on the nine definitions the probe compiles:
 
 ```
-no panic path in 10718 lines of IR for thumbv7em-none-eabihf
+no panic path in 11139 lines of IR for thumbv7em-none-eabihf
 ```
 
 ## How correctness is argued

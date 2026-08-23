@@ -230,6 +230,7 @@ pub fn calibrate_in_context(data: &[u8]) -> f64 {
 pub fn round_trip_command(out: &mut [u8]) -> bool {
     let packet = commands::SetGainContainer {
         seq_count: 0x1234,
+        power: commands::Power::On,
         channel: 3,
         gain: 1.5,
         trim: -7,
@@ -240,7 +241,24 @@ pub fn round_trip_command(out: &mut [u8]) -> bool {
     let Some(bytes) = out.get(..written) else {
         return false;
     };
-    matches!(commands::decode(bytes), Ok(commands::Packet::SetGainContainer(decoded)) if decoded == packet)
+    if !matches!(commands::decode(bytes), Ok(commands::Packet::SetGainContainer(decoded)) if decoded == packet)
+    {
+        return false;
+    }
+
+    // And one whose criteria pin an enumeration by its label, so the encoder writes a value
+    // the caller never supplied and the dispatcher reads it back as a set membership.
+    let pinned = commands::PowerOnContainer {
+        seq_count: 0x5678,
+        duration: 30,
+    };
+    let Ok(written) = pinned.encode(out) else {
+        return false;
+    };
+    let Some(bytes) = out.get(..written) else {
+        return false;
+    };
+    matches!(commands::decode(bytes), Ok(commands::Packet::PowerOnContainer(decoded)) if decoded == pinned)
 }
 
 /// Encodes and decodes a packet of little-endian fields.
