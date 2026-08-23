@@ -98,11 +98,14 @@ pub struct FlightContext {
 /// The plan states a criterion as bits — an offset, a width and how to read them — because
 /// the decoder it was written for has the packet in front of it. The accessor here does not:
 /// it is a method on a decoded struct, and the only values in reach are that struct's fields.
-/// So each test is resolved to the field occupying exactly those bits, which is also what
-/// makes the awkward case come out right. A criterion naming a parameter that is decoded
-/// *after* the field being calibrated resolves, in the plan, to the calibrated field's own
-/// bits; matching on geometry follows it there, where matching on the parameter's name would
-/// quietly compare the wrong field.
+/// So each test is resolved to the field occupying exactly those bits.
+///
+/// By the bits rather than by the parameter's name, because the plan has already done the
+/// resolving and the offset is where its answer is recorded. A criterion naming a parameter
+/// this container has not decoded yet — one that comes later, or the field being calibrated
+/// itself — comes back from the plan pointing at the calibrated field's own bits, which is
+/// what the reference compares. Looking the name up again would be second-guessing that, and
+/// after two entries have collapsed into one struct field a name is not unique anyway.
 #[derive(Clone, Debug)]
 pub enum ContextCriterion {
     /// One field against one literal.
@@ -121,7 +124,12 @@ pub struct ContextTest {
     /// Always of a type `i128::from` accepts, and always one whose value is the raw number
     /// the criterion means: an integer, or a single-bit `bool`, and nothing else.
     pub ident: String,
-    /// Name as the definition writes it, for the generated comment.
+    /// The parameter that field decodes, as the definition names it, for the accessor's
+    /// documentation.
+    ///
+    /// Not always the parameter the criterion wrote. Where the definition named one this
+    /// container had not decoded yet, the plan has already resolved the comparison to the
+    /// field being calibrated, and this is that field.
     pub xtce_name: String,
     /// The operator.
     pub operator: CompareOp,
@@ -236,6 +244,17 @@ pub fn build(plan: &Plan) -> Result<Layout, FlightError> {
     })
 }
 
+/// One field of a container, indexed by the bits it occupies.
+///
+/// What a context calibrator's criterion needs to know about whatever sits at the offset the
+/// plan gave it.
+struct Spot {
+    ident: String,
+    xtce_name: String,
+    kind: Kind,
+    swap_bytes: bool,
+}
+
 struct Builder {
     enums: Vec<EnumType>,
     /// Enumerations already lifted, keyed by their variant list, so two parameters sharing an
@@ -329,12 +348,17 @@ impl Builder {
         // Context calibrators are resolved once the struct's fields are settled, because a
         // criterion may test the very field it selects a calibrator for and that field is
         // not in the list until now.
-        let spots: HashMap<(usize, u32), (String, Kind, bool)> = deduplicated
+        let spots: HashMap<(usize, u32), Spot> = deduplicated
             .iter()
             .map(|(field, _)| {
                 (
                     (field.bit_offset, field.bit_width),
-                    (field.ident.clone(), field.kind.clone(), field.swap_bytes),
+                    Spot {
+                        ident: field.ident.clone(),
+                        xtce_name: field.xtce_name.clone(),
+                        kind: field.kind.clone(),
+                        swap_bytes: field.swap_bytes,
+                    },
                 )
             })
             .collect();
@@ -423,7 +447,7 @@ impl Builder {
     /// default calibrator would report a number that is wrong in a way nothing else catches.
     fn contexts(
         list: &[ContextCalibration],
-        spots: &HashMap<(usize, u32), (String, Kind, bool)>,
+        spots: &HashMap<(usize, u32), Spot>,
         container: &str,
     ) -> Result<Vec<FlightContext>, FlightError> {
         list.iter()
@@ -438,7 +462,7 @@ impl Builder {
 
     fn context_criterion(
         criterion: &Criterion,
-        spots: &HashMap<(usize, u32), (String, Kind, bool)>,
+        spots: &HashMap<(usize, u32), Spot>,
         container: &str,
     ) -> Result<ContextCriterion, FlightError> {
         let children = |list: &[Criterion]| {
@@ -457,7 +481,7 @@ impl Builder {
 
     fn context_test(
         guard: &Guard,
-        spots: &HashMap<(usize, u32), (String, Kind, bool)>,
+        spots: &HashMap<(usize, u32), Spot>,
         container: &str,
     ) -> Result<ContextTest, FlightError> {
         let refuse = |reason: &'static str| FlightError::Unsupported {
@@ -466,11 +490,8 @@ impl Builder {
             reason,
         };
 
-        // By geometry, not by name: the plan resolves a criterion naming a parameter that is
-        // not decoded yet to the calibrated field's own bits, and the name it kept is the one
-        // the definition wrote. Following the name instead would compare a different field.
-        let Some((ident, kind, swap_bytes)) = spots.get(&(guard.bit_offset, guard.bit_width))
-        else {
+        // By where the bits are; see `ContextCriterion` for why that and not the name.
+        let Some(spot) = spots.get(&(guard.bit_offset, guard.bit_width)) else {
             return Err(refuse(
                 "a context calibrator's criterion tests bits this container does not carry \
                  as a field of the struct, so the accessor has nothing to compare: a \
@@ -481,14 +502,14 @@ impl Builder {
 
         // The struct holds the value after the reversal, which is what a criterion compares.
         // The two disagreeing would mean the plan read one span two ways.
-        if *swap_bytes != guard.swap_bytes {
+        if spot.swap_bytes != guard.swap_bytes {
             return Err(refuse(
                 "a context calibrator's criterion and the field it tests disagree about byte \
                  order",
             ));
         }
 
-        match kind {
+        match &spot.kind {
             Kind::Unsigned | Kind::Signed(_) => {}
             // A single bit is a `bool` without loss: the value is the bit. A wider boolean
             // field is not — the struct keeps whether the bits were nonzero, not which they
@@ -519,8 +540,8 @@ impl Builder {
         }
 
         Ok(ContextTest {
-            ident: ident.clone(),
-            xtce_name: guard.xtce_name.clone(),
+            ident: spot.ident.clone(),
+            xtce_name: spot.xtce_name.clone(),
             operator: guard.operator,
             value: guard.value,
         })

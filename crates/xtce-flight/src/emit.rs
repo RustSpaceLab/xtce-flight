@@ -266,10 +266,20 @@ fn calibrated_accessor(field: &FlightField) -> Option<TokenStream> {
     let contexts_doc = if field.contexts.is_empty() {
         String::new()
     } else {
+        let listed = field
+            .contexts
+            .iter()
+            .map(|context| format!("`{}`", criteria_prose(&context.criteria)))
+            .collect::<Vec<_>>()
+            .join(", then ");
         format!(
             " The definition gives it {} context calibrator(s) as well as a default; they are \
-             tried in order, against this packet's own fields, and the first whose criteria \
-             hold is the one applied.",
+             tried against this packet's own fields in order — {listed} — and the first whose \
+             criteria hold is the one applied. Each is named by the parameter it reads, which \
+             is not always the one the definition wrote: a criterion is compared against what \
+             the container has decoded so far, so one naming a parameter it has not — the \
+             field being calibrated, or one that comes after it — reads the field being \
+             calibrated instead.",
             field.contexts.len()
         )
     };
@@ -290,6 +300,50 @@ fn calibrated_accessor(field: &FlightField) -> Option<TokenStream> {
             #body
         }
     })
+}
+
+/// A context's criteria as prose, for the accessor's documentation.
+///
+/// Named by the parameter each comparison *reads*. Where the definition named one the
+/// container had not decoded yet, that is already the field being calibrated: the plan
+/// resolves the fallback, and the name it keeps is the parameter whose bits are compared.
+fn criteria_prose(criterion: &ContextCriterion) -> String {
+    match criterion {
+        ContextCriterion::Test(test) => {
+            let operator = match test.operator {
+                CompareOp::Equal => "==",
+                CompareOp::NotEqual => "!=",
+                CompareOp::Less => "<",
+                CompareOp::LessOrEqual => "<=",
+                CompareOp::Greater => ">",
+                CompareOp::GreaterOrEqual => ">=",
+            };
+            format!("{} {operator} {}", test.xtce_name, test.value)
+        }
+        ContextCriterion::All(children) => {
+            if children.is_empty() {
+                return "always".to_owned();
+            }
+            children
+                .iter()
+                .map(criteria_prose)
+                .collect::<Vec<_>>()
+                .join(" and ")
+        }
+        ContextCriterion::Any(children) => {
+            if children.is_empty() {
+                return "never".to_owned();
+            }
+            format!(
+                "({})",
+                children
+                    .iter()
+                    .map(criteria_prose)
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            )
+        }
+    }
 }
 
 /// One calibrator applied to a field's raw value, as an expression of type `Result<f64, _>`.

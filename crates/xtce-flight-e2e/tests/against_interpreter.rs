@@ -568,52 +568,98 @@ fn context_calibrators_match_the_interpreter() {
 
     use context_calibrated::harness::Expected;
 
-    let mut modes = [0usize; 4];
-    let mut valid = 0usize;
-    // SELF's context tests SELF itself, and LOOKAHEAD's tests a parameter decoded after it,
-    // which resolves to LOOKAHEAD's own raw value. Both are counted from the raw value the
-    // harness reports, which is the value the criterion compares.
-    let mut self_above = 0usize;
-    let mut lookahead_hit = 0usize;
+    /// How often each context calibrator in the definition was the one that applied.
+    #[derive(Default)]
+    struct Taken {
+        /// SENSOR's two contexts, on `MODE == 1` and `MODE == 2`, and its default.
+        sensor: [usize; 3],
+        /// ARMED's, on `MODE < 2 && SENSOR > 30000`.
+        armed: usize,
+        /// SELF's, on SELF's own raw value.
+        self_: usize,
+        /// LOOKAHEAD's, which names LATER and reads LOOKAHEAD.
+        lookahead: usize,
+        /// SPLINE_CTX's, on `MODE == 3 && VALID`.
+        spline: usize,
+    }
+
+    let mut taken = Taken::default();
 
     for round in 0..256u64 {
         // The same seeds `check!` used, so these are the packets that were compared.
         let seed = 0x2545_F491_4F6C_DD1Du64.wrapping_mul(round + 1) ^ (round << 32);
         for case in context_calibrated::harness::cases(seed) {
+            // The whole packet first, because two of the criteria are conjunctions and
+            // counting their halves separately would not say either ever held.
+            let mut mode = None;
+            let mut valid = false;
             for (parameter, value) in &case.expected {
                 match (*parameter, value) {
-                    ("MODE", Expected::Unsigned(mode)) => {
-                        modes[usize::try_from(*mode).expect("MODE is two bits")] += 1;
-                    }
-                    ("VALID", Expected::Bool(true)) => valid += 1,
+                    ("MODE", Expected::Unsigned(raw)) => mode = Some(*raw),
+                    ("VALID", Expected::Bool(flag)) => valid = *flag,
                     _ => {}
                 }
             }
+            let mode = mode.expect("MODE is a field of this container");
+
+            // The raw value, which is what a criterion compares — including SELF's and
+            // LOOKAHEAD's, which resolve to the field being calibrated.
+            let mut raws = HashMap::new();
             for (parameter, raw, _) in &case.calibrated {
-                match *parameter {
-                    "SELF" if *raw > 2048 => self_above += 1,
-                    "LOOKAHEAD" if *raw == 5 => lookahead_hit += 1,
-                    _ => {}
-                }
+                raws.insert(*parameter, *raw);
+            }
+            let raw = |parameter: &str| {
+                *raws
+                    .get(parameter)
+                    .unwrap_or_else(|| panic!("{parameter} is a calibrated field here"))
+            };
+
+            taken.sensor[match mode {
+                1 => 0,
+                2 => 1,
+                _ => 2,
+            }] += 1;
+            if mode < 2 && raw("SENSOR") > 30000 {
+                taken.armed += 1;
+            }
+            if raw("SELF") > 2048 {
+                taken.self_ += 1;
+            }
+            if raw("LOOKAHEAD") == 5 {
+                taken.lookahead += 1;
+            }
+            if mode == 3 && valid {
+                taken.spline += 1;
             }
         }
     }
 
-    for (mode, count) in modes.iter().enumerate() {
+    for (branch, count) in taken.sensor.iter().enumerate() {
         assert!(
             *count > 20,
-            "MODE was {mode} in only {count} packet(s), so a branch of SENSOR's chain went \
-             untested"
+            "branch {branch} of SENSOR's chain was taken only {count} time(s)"
         );
     }
-    assert!(valid > 20, "VALID was set in only {valid} packet(s)");
     assert!(
-        self_above > 20,
-        "SELF was above its own threshold in only {self_above} packet(s)"
+        taken.armed > 20,
+        "ARMED's conjunction held only {} time(s)",
+        taken.armed
     );
     assert!(
-        lookahead_hit > 5,
-        "LOOKAHEAD's criterion held in only {lookahead_hit} packet(s)"
+        taken.self_ > 20,
+        "SELF's criterion on its own value held only {} time(s)",
+        taken.self_
+    );
+    assert!(
+        taken.lookahead > 5,
+        "LOOKAHEAD's criterion held only {} time(s)",
+        taken.lookahead
+    );
+    assert!(
+        taken.spline > 20,
+        "SPLINE_CTX's conjunction held only {} time(s), so the spline in a context went \
+         untested",
+        taken.spline
     );
 }
 
@@ -625,7 +671,7 @@ fn context_calibrators_match_the_interpreter() {
 /// reference reaches for instead is the raw value of the field being calibrated. The
 /// definition says `LATER`; the comparison is against LOOKAHEAD.
 ///
-/// Two packets, chosen so that a generator following the parameter's *name* gives the
+/// Two packets, chosen so that reading LATER where the definition says LATER gives the
 /// opposite answer on both. The interpreter is asked as well, because agreeing with it is the
 /// point — but the assertions on the values stand on their own, so this test still says what
 /// it means if the two implementations ever drift together.
