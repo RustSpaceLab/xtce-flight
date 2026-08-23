@@ -28,9 +28,12 @@
   so `== 5` holds one packet in sixteen; and SELF's threshold sits mid-range for a twelve-bit
   field rather than near its floor. The test asserts every branch was taken.
 
-  FLAGS is an enumeration nothing tests, and PLAIN an uncalibrated field: the controls, so a
-  generator that calibrated everything or tripped over a field it could not compare is
-  caught.
+  FLAGS is an enumeration a criterion tests *by its label* — `FLAGS != "IDLE"`, with
+  `useCalibratedValue` left at the default of true, so what is compared is the engineering
+  value, and an enumeration's engineering value is a string. Three of its four labels satisfy
+  that, so the raw values they cover are a range rather than one value, which is the case a
+  resolution that only handled equality would get wrong. PLAIN is the control: an uncalibrated
+  field, so a generator that calibrated everything is caught.
 -->
 <SpaceSystem xmlns="http://www.omg.org/spec/XTCE/20180204" name="ContextCalibrated">
   <TelemetryMetaData>
@@ -108,6 +111,7 @@
                               useCalibratedValue="false"/>
                   <Comparison parameterRef="SENSOR" value="30000" comparisonOperator="&gt;"
                               useCalibratedValue="false"/>
+                  <Comparison parameterRef="VALID" value="1" useCalibratedValue="false"/>
                 </ComparisonList>
               </ContextMatch>
               <Calibrator>
@@ -181,7 +185,14 @@
               <ContextMatch>
                 <ComparisonList>
                   <Comparison parameterRef="MODE" value="3" useCalibratedValue="false"/>
-                  <Comparison parameterRef="VALID" value="1" useCalibratedValue="false"/>
+                  <!--
+                    A *label*, and `useCalibratedValue` left at its default of true. An
+                    enumeration's engineering value is its label, so this is a string
+                    comparison — resolved to the raw values it covers when the code is
+                    generated. `!=` covers three of the four labels, so the set is a range
+                    rather than one value.
+                  -->
+                  <Comparison parameterRef="FLAGS" value="IDLE" comparisonOperator="!="/>
                 </ComparisonList>
               </ContextMatch>
               <Calibrator>

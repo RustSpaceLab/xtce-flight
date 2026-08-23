@@ -574,13 +574,13 @@ fn context_calibrators_match_the_interpreter() {
     struct Taken {
         /// SENSOR's two contexts, on `MODE == 1` and `MODE == 2`, and its default.
         sensor: [usize; 3],
-        /// ARMED's, on `MODE < 2 && SENSOR > 30000`.
+        /// ARMED's, on `MODE < 2 && SENSOR > 30000 && VALID`.
         armed: usize,
         /// SELF's, on SELF's own raw value.
         self_: usize,
         /// LOOKAHEAD's, which names LATER and reads LOOKAHEAD.
         lookahead: usize,
-        /// SPLINE_CTX's, on `MODE == 3 && VALID`.
+        /// SPLINE_CTX's, on `MODE == 3 && FLAGS != "IDLE"` — a comparison against a label.
         spline: usize,
     }
 
@@ -594,10 +594,15 @@ fn context_calibrators_match_the_interpreter() {
             // counting their halves separately would not say either ever held.
             let mut mode = None;
             let mut valid = false;
+            let mut idle = false;
             for (parameter, value) in &case.expected {
                 match (*parameter, value) {
                     ("MODE", Expected::Unsigned(raw)) => mode = Some(*raw),
                     ("VALID", Expected::Bool(flag)) => valid = *flag,
+                    // The interpreter reports an enumeration as its label, which is exactly
+                    // what the criterion compares — so the tally compares the same thing the
+                    // definition does, rather than the raw value behind it.
+                    ("FLAGS", Expected::Label(label)) => idle = *label == "IDLE",
                     _ => {}
                 }
             }
@@ -620,7 +625,7 @@ fn context_calibrators_match_the_interpreter() {
                 2 => 1,
                 _ => 2,
             }] += 1;
-            if mode < 2 && raw("SENSOR") > 30000 {
+            if mode < 2 && raw("SENSOR") > 30000 && valid {
                 taken.armed += 1;
             }
             if raw("SELF") > 2048 {
@@ -629,7 +634,7 @@ fn context_calibrators_match_the_interpreter() {
             if raw("LOOKAHEAD") == 5 {
                 taken.lookahead += 1;
             }
-            if mode == 3 && valid {
+            if mode == 3 && !idle {
                 taken.spline += 1;
             }
         }
@@ -658,8 +663,8 @@ fn context_calibrators_match_the_interpreter() {
     );
     assert!(
         taken.spline > 20,
-        "SPLINE_CTX's conjunction held only {} time(s), so the spline in a context went \
-         untested",
+        "SPLINE_CTX's conjunction held only {} time(s), so the spline in a context — and the \
+         label comparison that selects it — went untested",
         taken.spline
     );
 }
