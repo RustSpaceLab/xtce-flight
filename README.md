@@ -116,6 +116,7 @@ than one that stops, because the gap only shows up in flight.
 | Integers, 1–64 bits, all three signed codings | Yes |
 | IEEE-754 binary16, binary32, binary64 | Yes |
 | MIL-STD-1750A | Refused — reading it is many-to-one, so there is no inverse to write |
+| A base container left concrete beside its own children | Refused by name — `abstract` defaults to false in XTCE, and a container with no restriction criteria matches every packet long enough to hold it, so the generated `decode` would answer `Ambiguous` for all of them |
 | Booleans, enumerations (as generated Rust enums) | Yes |
 | Fixed-size text: whole-buffer, terminated, length-prefixed | Yes |
 | Fixed-size binary | Yes |

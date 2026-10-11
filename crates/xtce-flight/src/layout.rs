@@ -309,6 +309,25 @@ pub fn build(plan: &Plan) -> Result<Layout, FlightError> {
         });
     }
 
+    // A container with no restriction criteria matches every packet long enough to hold it —
+    // its generated `matches` is `true` — so a decoder holding it beside any other container
+    // answers `Ambiguous` for every packet it is ever given. XTCE's `abstract` defaults to
+    // false, which makes an unmarked base container, the ordinary CCSDS primary-header shape,
+    // exactly that. Refused here by name rather than generated into a decoder that rejects
+    // every packet once it is on the spacecraft.
+    if containers.len() > 1
+        && let Some(unconditional) = containers.iter().find(|held| held.constants.is_empty())
+    {
+        return Err(FlightError::Unsupported {
+            element: "SequenceContainer".to_owned(),
+            container: unconditional.xtce_name.clone(),
+            reason: "this container has no restriction criteria, so it matches every packet \
+                     long enough to hold it; beside the other containers generated here that \
+                     makes every packet ambiguous. Mark it abstract=\"true\" if other \
+                     containers inherit from it, or give it criteria that select it",
+        });
+    }
+
     Ok(Layout {
         containers,
         enums: builder.enums,
