@@ -234,6 +234,54 @@ fn a_data_dependent_width_is_refused() {
     );
 }
 
+/// A base left concrete matches everything, and `abstract` defaults to false.
+///
+/// The generated `matches` for a container with no criteria is `true`, so a decoder holding it
+/// beside its own children answers `Ambiguous` for every packet. Refused at generation time
+/// rather than discovered on the spacecraft.
+#[test]
+fn a_base_container_that_is_not_abstract_is_refused_by_name() {
+    let body = r#"    <ParameterTypeSet>
+      <IntegerParameterType name="APID_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>
+      <IntegerParameterType name="DATA_T">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet>
+      <Parameter name="APID" parameterTypeRef="APID_T"/>
+      <Parameter name="DATA" parameterTypeRef="DATA_T"/>
+    </ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Base">
+        <EntryList>
+          <ParameterRefEntry parameterRef="APID"/>
+        </EntryList>
+      </SequenceContainer>
+      <SequenceContainer name="Child">
+        <EntryList>
+          <ParameterRefEntry parameterRef="DATA"/>
+        </EntryList>
+        <BaseContainer containerRef="Base">
+          <RestrictionCriteria>
+            <Comparison parameterRef="APID" value="42" useCalibratedValue="false"/>
+          </RestrictionCriteria>
+        </BaseContainer>
+      </SequenceContainer>
+    </ContainerSet>"#;
+
+    let message = refusal(layout_of(body));
+    assert!(
+        message.contains("Base"),
+        "the refusal has to name it: {message}"
+    );
+    assert!(
+        message.contains("no restriction criteria"),
+        "unexpected refusal: {message}"
+    );
+}
+
 #[test]
 fn restriction_criteria_become_constants_and_leave_the_struct() {
     let body = r#"    <ParameterTypeSet>
