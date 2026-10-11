@@ -11,8 +11,12 @@ rule against a code path that can panic. The generators that produce that half a
 inside the companies that fly and stay there.
 
 ```console
-$ xtce-flight generate mission.xml -o telemetry.rs
+$ cargo run --release -p xtce-flight -- generate testdata/flight_shapes.xml -o telemetry.rs
 ```
+
+That definition ships with the repository and is where the `StatusReport` below comes from, so
+the two blocks are one example. `cargo install --path crates/xtce-flight` puts the command on
+your `PATH` as `xtce-flight` if you would rather type that.
 
 ```rust
 // Every field the definition leaves free, and only those: VERSION and PKT_APID are
@@ -250,7 +254,7 @@ no mission definition in reach has a 16-bit float at all.
 ## Testing
 
 ```console
-$ cargo test --workspace                        # 32 tests, no Python needed
+$ cargo test --workspace                        # 42 tests, no Python needed
 $ ./scripts/check-no-panic.sh                   # the bare-metal gate
 ```
 
