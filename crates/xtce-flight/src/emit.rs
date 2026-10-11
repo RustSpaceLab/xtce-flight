@@ -745,15 +745,6 @@ fn raw_from_value(field: &FlightField, value: &TokenStream) -> TokenStream {
 }
 
 /// Puts a little-endian field's bytes the other way round, on the way out.
-///
-/// The decoder reverses `width / 8` bytes of what it reads, so the encoder reverses them
-/// again — which is the same operation, because a byte reversal is its own inverse. Only
-/// whole-byte widths reach here; the layout refuses the rest, since reversing a value
-/// narrower than its byte count has no inverse at all.
-///
-/// `swap_bytes` on the widened integer does the reversal, and the shift discards the bytes
-/// above the field: a 24-bit value in a `u32` reverses to four bytes, of which the top three
-/// are the ones wanted.
 fn reverse_if_little_endian(field: &FlightField, raw: &TokenStream) -> TokenStream {
     if !field.swap_bytes || field.bit_width <= 8 {
         return raw.clone();
