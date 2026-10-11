@@ -150,7 +150,6 @@ fn a_plain_container_becomes_one_struct() {
     assert!(!container.borrows, "an integer does not borrow");
 }
 
-/// A width that is not one of IEEE-754's is refused rather than invented.
 #[test]
 fn a_float_that_is_not_16_32_or_64_bits_is_refused() {
     let message = refusal(layout_of(&one_field(
@@ -165,7 +164,6 @@ fn a_float_that_is_not_16_32_or_64_bits_is_refused() {
     );
 }
 
-/// Text has to start on a byte and fill whole ones, because it is written as a slice.
 #[test]
 fn text_off_a_byte_boundary_is_refused() {
     let body = r#"    <ParameterTypeSet>
@@ -200,7 +198,6 @@ fn text_off_a_byte_boundary_is_refused() {
     );
 }
 
-/// A width that comes from the packet has no fixed place in a struct.
 #[test]
 fn a_data_dependent_width_is_refused() {
     let body = r#"    <ParameterTypeSet>
@@ -237,7 +234,6 @@ fn a_data_dependent_width_is_refused() {
     );
 }
 
-/// A criterion the encoder writes is not also a field the caller sets.
 #[test]
 fn restriction_criteria_become_constants_and_leave_the_struct() {
     let body = r#"    <ParameterTypeSet>
@@ -290,7 +286,6 @@ fn restriction_criteria_become_constants_and_leave_the_struct() {
     );
 }
 
-/// An inequality names a set of values, and an encoder has to write one.
 #[test]
 fn a_non_equality_criterion_is_refused() {
     let body = r#"    <ParameterTypeSet>
@@ -324,7 +319,6 @@ fn a_non_equality_criterion_is_refused() {
     );
 }
 
-/// Two parameters of the same enumerated type share one generated Rust enum.
 #[test]
 fn identical_enumerations_are_generated_once() {
     let body = r#"    <ParameterTypeSet>
@@ -355,7 +349,6 @@ fn identical_enumerations_are_generated_once() {
     assert_eq!(layout.containers[0].fields[1].kind, Kind::Enumerated(0));
 }
 
-/// Labels are free text; identifiers are not.
 #[test]
 fn labels_that_are_not_identifiers_are_sanitised_without_colliding() {
     let body = r#"    <ParameterTypeSet>
@@ -392,7 +385,6 @@ fn labels_that_are_not_identifiers_are_sanitised_without_colliding() {
     assert_eq!(layout.enums[0].variants[1].2, "low power");
 }
 
-/// The generated names are the ones a caller types, so they keep the definition's casing.
 #[test]
 fn type_names_keep_mixed_case_and_fold_shouting() {
     use xtce_flight::layout::type_ident;
@@ -405,7 +397,6 @@ fn type_names_keep_mixed_case_and_fold_shouting() {
     assert_eq!(type_ident("---"), "Value");
 }
 
-/// An `<ANDedConditions>` is a conjunction, so it becomes constants like any other.
 #[test]
 fn a_conjunction_of_conditions_becomes_constants() {
     let body = r#"    <ParameterTypeSet>
@@ -467,8 +458,6 @@ fn a_conjunction_of_conditions_becomes_constants() {
 
 /// A disjunction is not a packet.
 ///
-/// A decoder can evaluate any boolean expression — it has the packet in front of it. An
-/// encoder has to produce one, and `A == 1 || A == 2` does not say which.
 #[test]
 fn a_disjunction_of_conditions_is_refused() {
     let body = r#"    <ParameterTypeSet>
@@ -516,8 +505,6 @@ fn a_disjunction_of_conditions_is_refused() {
 ///
 /// A decoder can do it — `xtce-rs` does, because agreeing with the reference is its contract
 /// — and a twelve-bit little-endian field then decodes to values up to sixteen bits wide.
-/// Most of those cannot be written back into twelve bits at all, so an encoder that accepted
-/// the field would produce packets its own decoder disagrees with.
 #[test]
 fn a_little_endian_field_that_is_not_whole_bytes_is_refused() {
     let refused = layout_of(&one_field(
@@ -548,8 +535,6 @@ fn a_little_endian_field_that_is_not_whole_bytes_is_refused() {
 /// A criterion on a little-endian field is written with its bytes the other way round.
 ///
 /// The interpreter compares the value *after* the reversal, so the encoder has to write the
-/// reversal undone — and that happens here, when the code is generated, rather than costing
-/// anything at run time.
 #[test]
 fn a_little_endian_criterion_is_inverted_when_it_is_planned() {
     let body = r#"    <ParameterTypeSet>
@@ -594,7 +579,6 @@ fn a_little_endian_criterion_is_inverted_when_it_is_planned() {
 /// the two are inverses.
 ///
 /// `xtce-rs` decodes it, and matches the Python reference doing so. Reading is well defined;
-/// only writing is not.
 #[test]
 fn a_mil_std_1750a_float_is_refused() {
     let message = refusal(layout_of(&one_field(
@@ -716,8 +700,6 @@ fn a_context_calibrator_resolves_to_the_fields_of_the_struct() {
 ///
 /// Those bits are not a field: they are what makes the packet recognisable, so the encoder
 /// writes them and the struct does not carry them. The accessor therefore has nothing to
-/// compare, and falling back to the default calibrator would report a number that is wrong
-/// in the one way nothing downstream can catch.
 #[test]
 fn a_context_criterion_on_a_restriction_criterion_is_refused() {
     let error = refusal(layout_of(
@@ -823,7 +805,6 @@ fn a_context_criterion_on_a_wide_boolean_is_refused() {
     );
 }
 
-/// A `<FixedValueEntry>` becomes bits the encoder writes, reduced to the width it declares.
 #[test]
 fn a_fixed_value_becomes_bits_the_encoder_writes() {
     let plain = layout_of(&one_field(
@@ -857,8 +838,6 @@ fn a_fixed_value_becomes_bits_the_encoder_writes() {
 
 /// A fixed value wider than a `u64` is written a byte at a time.
 ///
-/// Above 64 bits there is no literal to write it as, but a whole number of bytes starting on
-/// one needs no literal: each byte is its own assignment at its own index.
 #[test]
 fn a_fixed_value_wider_than_64_bits_is_written_byte_by_byte() {
     let layout = command_layout(
@@ -881,8 +860,6 @@ fn a_fixed_value_wider_than_64_bits_is_written_byte_by_byte() {
 }
 
 /// One wider than a `u64` that is *not* whole bytes is refused.
-///
-/// It would have to be shifted across every byte it touches, and nothing in reach asks for it.
 #[test]
 fn a_wide_fixed_value_off_a_byte_boundary_is_refused() {
     let error = refusal(command_layout(

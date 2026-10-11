@@ -258,8 +258,6 @@ fn a_real_mission_definition_survives_the_interpreter() {
 
 /// A value one bit too wide for its field is refused, not truncated.
 ///
-/// The failure this guards against does not look like a failure: the packet is the right
-/// length, every other field is right, and one number is quietly wrong.
 #[test]
 fn a_value_that_does_not_fit_is_refused() {
     use flight_shapes::flight::{Baud, Beacon, EncodeError};
@@ -311,7 +309,6 @@ fn a_value_that_does_not_fit_is_refused() {
     assert!(beacon.encode(&mut buffer).is_ok());
 }
 
-/// A buffer that is too small is an error rather than a partial packet.
 #[test]
 fn a_short_buffer_is_refused() {
     use flight_shapes::flight::{Beacon, EncodeError};
@@ -343,7 +340,6 @@ fn a_short_buffer_is_refused() {
     );
 }
 
-/// The string rules, which are where an encoder and a decoder most easily disagree.
 #[test]
 fn string_fields_have_to_fit_exactly_or_be_terminated() {
     use flight_shapes::flight::{EncodeError, Mode, StatusReport};
@@ -405,8 +401,6 @@ fn string_fields_have_to_fit_exactly_or_be_terminated() {
 
 /// Decoded strings and binaries point into the caller's buffer.
 ///
-/// This is the property that makes the generated decoder usable where there is no
-/// allocator, so it is worth an assertion rather than a comment.
 #[test]
 fn decoded_text_borrows_from_the_packet() {
     use flight_shapes::flight::StatusReport;
@@ -429,7 +423,6 @@ fn decoded_text_borrows_from_the_packet() {
     }
 }
 
-/// Two containers, and the dispatcher picks the one whose criteria hold.
 #[test]
 fn the_dispatcher_chooses_by_restriction_criteria() {
     use flight_shapes::flight::{DecodeError, Packet, decode};
@@ -536,8 +529,6 @@ fn binary16_narrowing_rounds_to_nearest_even() {
 ///
 /// Encoding is untouched by a calibrator — a spacecraft has an ADC count, and turning counts
 /// into engineering units is the ground's job — so what is under test here is the accessor,
-/// against `xtce-decode`'s own calibration. Two implementations sharing no code, the same
-/// input bits, compared on `to_bits()`.
 #[test]
 fn calibration_matches_the_interpreter_bit_for_bit() {
     let checked = check!(calibrated, "calibrated.xml", None::<&str>, 256u64);
@@ -555,8 +546,6 @@ fn calibration_matches_the_interpreter_bit_for_bit() {
 /// every field, so a criterion on an eight-bit field would hold in one packet in 256: the
 /// default branch would be checked thousands of times and the contexts twice, and the test
 /// would pass whatever the chain did with them. The fields the criteria test are narrow for
-/// that reason, and the counts below fail loudly if a change to the definition, the seed or
-/// the harness quietly stops reaching a branch.
 #[test]
 fn context_calibrators_match_the_interpreter() {
     let checked = check!(
@@ -679,8 +668,6 @@ fn context_calibrators_match_the_interpreter() {
 ///
 /// Two packets, chosen so that reading LATER where the definition says LATER gives the
 /// opposite answer on both. The interpreter is asked as well, because agreeing with it is the
-/// point — but the assertions on the values stand on their own, so this test still says what
-/// it means if the two implementations ever drift together.
 #[test]
 fn a_criterion_on_a_later_parameter_reads_the_field_being_calibrated() {
     use context_calibrated::flight::{Flags, Telemetry};
@@ -870,7 +857,6 @@ fn a_bounded_spline_refuses_outside_its_points() {
 /// check a fixed value either. The check below is that they are nevertheless *there* — a
 /// generator that dropped them would move every field after them, and the comparison against
 /// the interpreter would catch that; one that dropped a trailing one would not, so the sync
-/// marker and the trailer are asserted by hand.
 #[test]
 fn a_telecommand_survives_the_interpreter() {
     let checked = check!(commands, "commands.xml", Some("CmdBaseContainer"), 256u64);
@@ -883,7 +869,6 @@ fn a_telecommand_survives_the_interpreter() {
 /// `SPARE` is four bits that leave `MODE` off a byte boundary; `TRAILER` gives four bytes for
 /// a sixteen-bit field, and XTCE does not require those to agree — read as one big-endian
 /// number, `DEADBEEF` in sixteen bits is `BEEF`, and an encoder that wrote `DEAD` would
-/// produce a packet the ground cannot recognise while its own decoder stayed perfectly happy.
 #[test]
 fn the_fixed_values_a_command_carries_are_written() {
     use commands::flight::{Power, PowerOnContainer, SetGainContainer, SetModeContainer};
@@ -962,8 +947,6 @@ fn a_container_selected_by_conditions_round_trips() {
 /// one to *invert*. Reversing bytes is its own inverse, so a whole-byte field costs nothing
 /// — but `SEL` is the interesting one: the criterion compares the value *after* the
 /// reversal, so `encode` has to write the reversal undone or the interpreter will not
-/// recognise the packet at all. If it got that wrong, every packet here would fail to decode
-/// rather than decode to the wrong number.
 #[test]
 fn little_endian_fields_survive_the_interpreter() {
     let checked = check!(byte_order, "byte_order.xml", None::<&str>, 256u64);
@@ -980,7 +963,6 @@ fn little_endian_fields_survive_the_interpreter() {
 ///
 /// Note the nibble array in the middle. Its elements are four bits, so they are not
 /// byte-aligned and neither is anything after them until the array ends — the case where an
-/// expansion that quietly rounded to bytes would show up.
 #[test]
 fn arrays_survive_the_interpreter() {
     let checked = check!(arrays, "arrays.xml", None::<&str>, 256u64);
@@ -993,7 +975,6 @@ fn arrays_survive_the_interpreter() {
 /// time this generator runs there are no aggregates, only seventeen fields with names like
 /// `STATE.samples[2]`. The fixture nests the two in both directions and ends its aggregate on
 /// a four-bit member, so nothing after it is byte-aligned until the pad — an expansion that
-/// rounded a member up to a byte would move every field behind it.
 #[test]
 fn aggregates_survive_the_interpreter() {
     let checked = check!(aggregates, "aggregates.xml", None::<&str>, 256u64);
