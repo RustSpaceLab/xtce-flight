@@ -315,9 +315,11 @@ pub fn build(plan: &Plan) -> Result<Layout, FlightError> {
     // false, which makes an unmarked base container, the ordinary CCSDS primary-header shape,
     // exactly that. Refused here by name rather than generated into a decoder that rejects
     // every packet once it is on the spacecraft.
-    if containers.len() > 1
-        && let Some(unconditional) = containers.iter().find(|held| held.constants.is_empty())
-    {
+    let unconditional = containers
+        .iter()
+        .find(|held| held.constants.is_empty())
+        .filter(|_| containers.len() > 1);
+    if let Some(unconditional) = unconditional {
         return Err(FlightError::Unsupported {
             element: "SequenceContainer".to_owned(),
             container: unconditional.xtce_name.clone(),
