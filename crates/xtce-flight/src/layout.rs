@@ -427,14 +427,16 @@ impl Builder {
         // Two entries may name the same parameter — a container that repeats one, or an
         // inherited entry re-listed. The decoder collapses them; a struct cannot have the
         // field twice, so the last one wins, matching what a reader of the packet sees.
-        let mut seen: HashMap<String, usize> = HashMap::new();
-        let mut deduplicated: Vec<(FlightField, &Vec<ContextCalibration>)> = Vec::new();
+        let mut deduplicated: Vec<(FlightField, &Vec<ContextCalibration>)> =
+            Vec::with_capacity(fields.len());
         for (mut field, contexts) in fields {
             field.ident = xtce_codegen::plan::field_ident(&field.xtce_name);
-            if let Some(&at) = seen.get(&field.ident) {
-                deduplicated[at] = (field, contexts);
+            if let Some(existing) = deduplicated
+                .iter_mut()
+                .find(|(held, _)| held.ident == field.ident)
+            {
+                *existing = (field, contexts);
             } else {
-                seen.insert(field.ident.clone(), deduplicated.len());
                 deduplicated.push((field, contexts));
             }
         }
