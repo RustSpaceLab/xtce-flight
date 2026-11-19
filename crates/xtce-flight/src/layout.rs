@@ -429,12 +429,13 @@ impl Builder {
         // field twice, so the last one wins, matching what a reader of the packet sees.
         let mut seen: HashMap<String, usize> = HashMap::new();
         let mut deduplicated: Vec<(FlightField, &Vec<ContextCalibration>)> = Vec::new();
-        for field in fields {
-            if let Some(&at) = seen.get(&field.0.ident) {
-                deduplicated[at] = field;
+        for (mut field, contexts) in fields {
+            field.ident = xtce_codegen::plan::field_ident(&field.xtce_name);
+            if let Some(&at) = seen.get(&field.ident) {
+                deduplicated[at] = (field, contexts);
             } else {
-                seen.insert(field.0.ident.clone(), deduplicated.len());
-                deduplicated.push(field);
+                seen.insert(field.ident.clone(), deduplicated.len());
+                deduplicated.push((field, contexts));
             }
         }
 

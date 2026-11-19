@@ -307,6 +307,18 @@ fn a_value_that_does_not_fit_is_refused() {
     );
     beacon.ones_odd = i16::MIN + 1;
     assert!(beacon.encode(&mut buffer).is_ok());
+
+    // Sign-magnitude has the same symmetric range for the same reason: one bit for the sign
+    // and two representations of zero leave i16::MIN out of reach of a 16-bit field.
+    beacon.signmag_odd = i16::MIN;
+    assert_eq!(
+        beacon.encode(&mut buffer),
+        Err(EncodeError::OutOfRange {
+            parameter: "SIGNMAG_ODD"
+        })
+    );
+    beacon.signmag_odd = i16::MIN + 1;
+    assert!(beacon.encode(&mut buffer).is_ok());
 }
 
 #[test]
