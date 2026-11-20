@@ -1,7 +1,7 @@
 [package]
 name = "xtce-flight-nostd-probe"
 description = "Builds the generated flight code for a bare-metal target, with no std and no panic path"
-version = "0.1.1"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ path = "src/lib.rs"
 
 [build-dependencies]
 xtce-flight = { path = "../../crates/xtce-flight", default-features = false }
-xtce-model = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "17671eaf4ea8aa9fb17c096001b39ecd88e77059" }
+xtce-model = { git = "https://github.com/RustSpaceLab/xtce-rs", rev = "158e120d4e2bbe74425fb5c4d09187233cd85143" }
 
 [profile.release]
 opt-level = "z"
