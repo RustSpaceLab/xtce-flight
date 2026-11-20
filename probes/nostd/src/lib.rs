@@ -372,3 +372,13 @@ pub fn round_trip_aggregates(out: &mut [u8]) -> bool {
         Err(_) => false,
     }
 }
+
+/// Stamps and verifies an ECSS-E-ST-70-41C CRC-16-CCITT packet error control syndrome.
+#[inline(never)]
+#[must_use]
+pub fn stamp_and_verify_ecss_crc16(out: &mut [u8]) -> bool {
+    let Some(crc) = flight_shapes::stamp_crc16_ccitt(out) else {
+        return false;
+    };
+    crc != 0xFFFF || flight_shapes::verify_crc16_ccitt(out)
+}

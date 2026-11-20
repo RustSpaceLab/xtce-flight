@@ -1527,15 +1527,75 @@ fn helpers(layout: &Layout) -> TokenStream {
         quote!()
     };
 
+    let crc = crc_helpers();
     let errors = errors();
 
     quote! {
         #errors
+        #crc
         #half
         #find
         #powi
         #power
         #spline
+    }
+}
+
+/// ECSS-E-ST-70-41C Annex B / CCSDS 131.0-B CRC-16-CCITT (`0x1021`, initial `0xFFFF`) helpers.
+///
+/// Written with slice pattern matching and a fixed 8-step shift register so no runtime bounds
+/// check — and therefore no `core::panicking` branch — can survive into bare-metal LLVM IR.
+fn crc_helpers() -> TokenStream {
+    quote! {
+        /// Computes the 16-bit ECSS-E-ST-70-41C / CCSDS 131.0-B CRC-16-CCITT syndrome
+        /// (`0x1021`, initial value `0xFFFF`, no reflection, no final XOR) over `bytes`.
+        ///
+        /// Over the ASCII check string `b"123456789"` this returns `0x29B1`.
+        #[must_use]
+        pub const fn crc16_ccitt(bytes: &[u8]) -> u16 {
+            let mut crc: u16 = 0xFFFF;
+            let mut rest = bytes;
+            while let [byte, tail @ ..] = rest {
+                crc ^= (*byte as u16) << 8;
+                let mut bit = 0u8;
+                while bit < 8 {
+                    if (crc & 0x8000) != 0 {
+                        crc = (crc << 1) ^ 0x1021;
+                    } else {
+                        crc <<= 1;
+                    }
+                    bit += 1;
+                }
+                rest = tail;
+            }
+            crc
+        }
+
+        /// Computes the ECSS-E-ST-70-41C CRC-16-CCITT syndrome over all bytes of `packet`
+        /// preceding the final two octets, stamps the big-endian syndrome into those final two
+        /// octets, and returns the stamped CRC.
+        ///
+        /// Returns `None` if `packet` is shorter than 2 bytes.
+        pub fn stamp_crc16_ccitt(packet: &mut [u8]) -> Option<u16> {
+            let [body @ .., hi, lo] = packet else {
+                return None;
+            };
+            let crc = crc16_ccitt(body);
+            let [msb, lsb] = crc.to_be_bytes();
+            *hi = msb;
+            *lo = lsb;
+            Some(crc)
+        }
+
+        /// Returns `true` when `packet` is at least 2 bytes long and its trailing big-endian
+        /// CRC-16-CCITT syndrome verifies to a zero residue (`0x0000`).
+        #[must_use]
+        pub const fn verify_crc16_ccitt(packet: &[u8]) -> bool {
+            if packet.len() < 2 {
+                return false;
+            }
+            crc16_ccitt(packet) == 0
+        }
     }
 }
 

@@ -992,3 +992,24 @@ fn aggregates_survive_the_interpreter() {
     let checked = check!(aggregates, "aggregates.xml", None::<&str>, 256u64);
     assert!(checked > 4_000, "only {checked} field(s) compared");
 }
+
+#[test]
+fn emitted_ecss_crc16_ccitt_stamps_and_verifies_packets() {
+    use flight_shapes::flight::{crc16_ccitt, stamp_crc16_ccitt, verify_crc16_ccitt};
+
+    assert_eq!(crc16_ccitt(b""), 0xFFFF);
+    assert_eq!(crc16_ccitt(b"123456789"), 0x29B1);
+    assert!(!verify_crc16_ccitt(&[]));
+    assert!(!verify_crc16_ccitt(&[0xFF]));
+    assert_eq!(stamp_crc16_ccitt(&mut []), None);
+    assert_eq!(stamp_crc16_ccitt(&mut [0x00]), None);
+
+    let mut frame = [b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', 0, 0];
+    let crc = stamp_crc16_ccitt(&mut frame).expect("11-byte frame has room for 2-byte PEC");
+    assert_eq!(crc, 0x29B1);
+    assert_eq!(&frame[9..11], &[0x29, 0xB1]);
+    assert!(verify_crc16_ccitt(&frame));
+
+    frame[3] ^= 0x01;
+    assert!(!verify_crc16_ccitt(&frame));
+}
