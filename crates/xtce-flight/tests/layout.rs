@@ -918,3 +918,56 @@ fn a_wide_fixed_value_off_a_byte_boundary_is_refused() {
         "unexpected refusal: {error}"
     );
 }
+
+/// One of whole-byte width that starts off a byte boundary is refused too.
+#[test]
+fn a_wide_fixed_value_shifted_by_a_preceding_nibble_is_refused() {
+    let error = refusal(command_layout(
+        r#"            <FixedValueEntry name="LEAD" binaryValue="A" sizeInBits="4"/>
+            <FixedValueEntry name="FILL" binaryValue="001122334455667788" sizeInBits="72"/>"#,
+    ));
+    assert!(
+        error.contains("FixedValueEntry") && error.contains("start on a byte"),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// Repeating a parameter in one container keeps the last occurrence in the struct.
+#[test]
+fn a_repeated_parameter_collapses_to_its_last_occurrence() {
+    let body = r#"    <ParameterTypeSet>
+      <IntegerParameterType name="U8">
+        <IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
+      </IntegerParameterType>
+    </ParameterTypeSet>
+    <ParameterSet>
+      <Parameter name="DUP" parameterTypeRef="U8"/>
+      <Parameter name="MID" parameterTypeRef="U8"/>
+    </ParameterSet>
+    <ContainerSet>
+      <SequenceContainer name="Only">
+        <EntryList>
+          <ParameterRefEntry parameterRef="DUP"/>
+          <ParameterRefEntry parameterRef="MID"/>
+          <ParameterRefEntry parameterRef="DUP"/>
+        </EntryList>
+      </SequenceContainer>
+    </ContainerSet>"#;
+
+    let layout = layout_of(body).expect("compiles");
+    let container = &layout.containers[0];
+    assert_eq!(container.len_bytes, 3, "all three entries occupy wire room");
+    assert_eq!(
+        container.fields.len(),
+        2,
+        "a struct cannot carry the same field name twice"
+    );
+    assert_eq!(container.fields[0].ident, "dup");
+    assert_eq!(container.fields[0].xtce_name, "DUP");
+    assert_eq!(
+        container.fields[0].bit_offset, 16,
+        "the last entry wins, matching what a reader of the packet sees"
+    );
+    assert_eq!(container.fields[1].xtce_name, "MID");
+    assert_eq!(container.fields[1].bit_offset, 8);
+}
